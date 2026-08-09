@@ -1,8 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
+use crate::exec::CommandRunner;
 use crate::model::{ActionGuide, Confidence, Evidence, OwnerId, OwnershipNode};
+use crate::scan;
 
 mod owner;
 
@@ -35,10 +36,16 @@ struct DetectionContext<'a> {
     real_path: &'a Path,
     link_target: Option<PathBuf>,
     paths: Vec<String>,
+    runner: &'a CommandRunner,
 }
 
 impl<'a> DetectionContext<'a> {
-    fn new(command: &'a str, path: &'a Path, real_path: &'a Path) -> Self {
+    fn new(
+        command: &'a str,
+        path: &'a Path,
+        real_path: &'a Path,
+        runner: &'a CommandRunner,
+    ) -> Self {
         let link_target = immediate_link_target(path);
         let mut candidate_paths = vec![path.to_path_buf(), real_path.to_path_buf()];
         if let Some(target) = &link_target {
@@ -54,6 +61,7 @@ impl<'a> DetectionContext<'a> {
             real_path,
             link_target,
             paths,
+            runner,
         }
     }
 
@@ -89,8 +97,13 @@ impl<'a> DetectionContext<'a> {
     }
 }
 
-pub fn detect(command: &str, path: &Path, real_path: &Path) -> OwnershipNode {
-    let context = DetectionContext::new(command, path, real_path);
+pub fn detect(
+    command: &str,
+    path: &Path,
+    real_path: &Path,
+    runner: &CommandRunner,
+) -> OwnershipNode {
+    let context = DetectionContext::new(command, path, real_path, runner);
     DETECTORS
         .iter()
         .find_map(|detector| detector(&context))
@@ -194,13 +207,14 @@ fn detect_bun_installer(context: &DetectionContext<'_>) -> Option<OwnershipNode>
 
 #[cfg(target_os = "macos")]
 fn detect_macos_receipt(context: &DetectionContext<'_>) -> Option<OwnershipNode> {
-    macos_receipt(context.command, context.real_path)
-        .or_else(|| macos_receipt(context.command, context.path))
+    macos_receipt(context.runner, context.command, context.real_path)
+        .or_else(|| macos_receipt(context.runner, context.command, context.path))
 }
 
 #[cfg(target_os = "macos")]
 fn detect_python_org_installer(context: &DetectionContext<'_>) -> Option<OwnershipNode> {
     python_org_receipt(
+        context.runner,
         context.command,
         &context.paths,
         context.evidence(),
@@ -210,7 +224,7 @@ fn detect_python_org_installer(context: &DetectionContext<'_>) -> Option<Ownersh
 
 #[cfg(target_os = "linux")]
 fn detect_linux_package(context: &DetectionContext<'_>) -> Option<OwnershipNode> {
-    linux_package(context.command, context.real_path)
+    linux_package(context.runner, context.command, context.real_path)
 }
 
 fn detect_operating_system(context: &DetectionContext<'_>) -> Option<OwnershipNode> {
@@ -256,19 +270,30 @@ fn detect_unconfirmed(context: &DetectionContext<'_>) -> OwnershipNode {
     )
 }
 
-pub fn enrich_with_manager_query(owner: &mut OwnershipNode, command: &str, expected_path: &Path) {
+pub fn enrich_with_manager_query(
+    owner: &mut OwnershipNode,
+    command: &str,
+    expected_path: &Path,
+    runner: &CommandRunner,
+) {
     let id = owner.id;
-    let Some(query) = manager_query(id, command, expected_path) else {
+    let Some(query) = manager_query(runner, id, command, expected_path) else {
         return;
     };
-    let query_paths = vec![query.result.clone()];
+    owner.evidence.push(query.evidence);
+    let Some(result) = query.result else {
+        // The query ran but failed (timeout or spawn failure); the evidence
+        // above already records that, and there is nothing to enrich.
+        return;
+    };
+    let query_paths = vec![result.clone()];
     if owner.package.is_none() {
         owner.package = id.tool_for_paths(&query_paths);
     }
     if owner.version.is_none() {
         owner.version = match id {
-            OwnerId::Fnm => Some(query.result.trim_start_matches('v').to_owned()),
-            OwnerId::Rustup => toolchain_from_rustup_path(&query.result),
+            OwnerId::Fnm => Some(result.trim_start_matches('v').to_owned()),
+            OwnerId::Rustup => toolchain_from_rustup_path(&result),
             _ => id.version_for_paths(&query_paths),
         };
     }
@@ -278,43 +303,68 @@ pub fn enrich_with_manager_query(owner: &mut OwnershipNode, command: &str, expec
         owner.version.as_deref(),
         expected_path,
     );
-    owner.evidence.push(query.evidence);
 }
 
 struct ManagerQuery {
-    result: String,
+    /// `None` when the query ran but failed (timeout or spawn failure): the
+    /// evidence still explains what happened, but there is no data to enrich
+    /// package/version/actions with.
+    result: Option<String>,
     evidence: Evidence,
 }
 
-fn manager_query(id: OwnerId, command: &str, expected_path: &Path) -> Option<ManagerQuery> {
+/// Resolves `name` to the executable `whowns` already found on PATH, rather
+/// than handing a bare name to `Command` and letting it search PATH again.
+/// The second search could pick a different shim than the one `whowns`
+/// inspected if PATH changed between the two lookups, so reusing our own
+/// resolution keeps the query honest about which binary it is questioning.
+fn resolve_program(name: &str) -> Option<PathBuf> {
+    scan::find_executables(name)
+        .into_iter()
+        .find(|resolution| resolution.active)
+        .map(|resolution| resolution.real_path)
+}
+
+fn manager_query(
+    runner: &CommandRunner,
+    id: OwnerId,
+    command: &str,
+    expected_path: &Path,
+) -> Option<ManagerQuery> {
     let query = id.query(command)?;
-    let output = Command::new(query.program)
-        .args(&query.arguments)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let result = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if result.is_empty() {
-        return None;
-    }
+    let program = resolve_program(query.program)?;
     let invocation = std::iter::once(query.program)
-        .chain(query.arguments)
+        .chain(query.arguments.iter().copied())
         .collect::<Vec<_>>()
         .join(" ");
-    let relation = if Path::new(&result) == expected_path {
-        " and it matches the resolved executable"
-    } else {
-        ""
-    };
-    Some(ManagerQuery {
-        result: result.clone(),
-        evidence: Evidence::new(
-            "manager query",
-            format!("`{invocation}` returned `{result}`{relation}"),
-        ),
-    })
+    match runner.query(&program, &query.arguments) {
+        Err(failure) => Some(ManagerQuery {
+            result: None,
+            evidence: Evidence::new(
+                "manager query",
+                format!("`{invocation}` {}", failure.describe()),
+            ),
+        }),
+        Ok(output) if output.success => {
+            let result = output.stdout.trim().to_owned();
+            if result.is_empty() {
+                return None;
+            }
+            let relation = if Path::new(&result) == expected_path {
+                " and it matches the resolved executable"
+            } else {
+                ""
+            };
+            Some(ManagerQuery {
+                result: Some(result.clone()),
+                evidence: Evidence::new(
+                    "manager query",
+                    format!("`{invocation}` returned `{result}`{relation}"),
+                ),
+            })
+        }
+        Ok(_) => None,
+    }
 }
 
 pub(crate) fn unconfirmed_manager_source(manager: OwnerId, path: Option<&Path>) -> OwnershipNode {
@@ -425,6 +475,7 @@ fn toolchain_from_rustup_path(path: &str) -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn python_org_receipt(
+    runner: &CommandRunner,
     command: &str,
     paths: &[String],
     mut evidence: Vec<Evidence>,
@@ -437,13 +488,9 @@ fn python_org_receipt(
             .filter(|value| !value.is_empty())
     })?;
     let package = format!("org.python.Python.PythonFramework-{version}");
-    let status = Command::new("pkgutil")
-        .arg("--pkg-info")
-        .arg(&package)
-        .output()
-        .ok()?
-        .status;
-    if !status.success() {
+    let program = resolve_program("pkgutil")?;
+    let output = runner.query(&program, &["--pkg-info", &package]).ok()?;
+    if !output.success {
         return None;
     }
     evidence.push(Evidence::new(
@@ -463,15 +510,14 @@ fn python_org_receipt(
 }
 
 #[cfg(target_os = "macos")]
-fn macos_receipt(command: &str, path: &Path) -> Option<OwnershipNode> {
-    let output = Command::new("pkgutil")
-        .arg("--file-info")
-        .arg(path)
-        .output()
+fn macos_receipt(runner: &CommandRunner, command: &str, path: &Path) -> Option<OwnershipNode> {
+    let program = resolve_program("pkgutil")?;
+    let path_text = path.to_string_lossy();
+    let output = runner
+        .query(&program, &["--file-info", path_text.as_ref()])
         .ok()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let package = field(&stdout, "pkgid:")?;
-    let version = field(&stdout, "pkg-version:");
+    let package = field(&output.stdout, "pkgid:")?;
+    let version = field(&output.stdout, "pkg-version:");
     let mut evidence = vec![Evidence::new(
         "pkgutil",
         format!("receipt {package} owns {}", path.display()),
@@ -504,7 +550,7 @@ fn field(text: &str, prefix: &str) -> Option<String> {
 }
 
 #[cfg(target_os = "linux")]
-fn linux_package(command: &str, path: &Path) -> Option<OwnershipNode> {
+fn linux_package(runner: &CommandRunner, command: &str, path: &Path) -> Option<OwnershipNode> {
     let path_text = path.to_str()?;
     let queries: [(&str, &[&str], OwnerId); 4] = [
         ("dpkg-query", &["-S"], OwnerId::Dpkg),
@@ -512,18 +558,19 @@ fn linux_package(command: &str, path: &Path) -> Option<OwnershipNode> {
         ("pacman", &["-Qo"], OwnerId::Pacman),
         ("apk", &["info", "-W"], OwnerId::Apk),
     ];
-    for (program, arguments, id) in queries {
-        let Ok(output) = Command::new(program)
-            .args(arguments)
-            .arg(path_text)
-            .output()
-        else {
+    for (program_name, arguments, id) in queries {
+        let Some(program) = resolve_program(program_name) else {
             continue;
         };
-        if !output.status.success() {
+        let full_arguments: Vec<&str> = arguments.iter().copied().chain([path_text]).collect();
+        let Ok(output) = runner.query(&program, &full_arguments) else {
+            continue;
+        };
+        if !output.success {
             continue;
         }
-        let raw = String::from_utf8_lossy(&output.stdout)
+        let raw = output
+            .stdout
             .lines()
             .next()
             .map(str::trim)
@@ -544,7 +591,7 @@ fn linux_package(command: &str, path: &Path) -> Option<OwnershipNode> {
             None,
             vec![Evidence::new(
                 "package query",
-                format!("`{program}` reports: {raw}"),
+                format!("`{program_name}` reports: {raw}"),
             )],
             id.actions(command, Some(&package), None, path),
         ));
@@ -584,10 +631,14 @@ mod tests {
         .join("\n")
     }
 
+    fn detect_for_test(command: &str, path: &Path, real_path: &Path) -> OwnershipNode {
+        detect(command, path, real_path, &CommandRunner::new())
+    }
+
     #[test]
     fn detects_nvm_with_version_and_actions() {
         let path = Path::new("/home/me/.nvm/versions/node/v22.3.0/bin/node");
-        let result = detect("node", path, path);
+        let result = detect_for_test("node", path, path);
         assert_eq!(result.id, OwnerId::Nvm);
         assert_eq!(result.package.as_deref(), Some("node"));
         assert_eq!(result.version.as_deref(), Some("22.3.0"));
@@ -715,7 +766,7 @@ mod tests {
 
         for fixture in fixtures {
             let path = Path::new(fixture.path);
-            let result = detect(fixture.command, path, path);
+            let result = detect_for_test(fixture.command, path, path);
             let owner = fixture.owner.as_str();
             assert_eq!(result.id, fixture.owner, "path: {}", fixture.path);
             assert_eq!(result.kind(), fixture.kind, "owner: {owner}");
@@ -731,7 +782,7 @@ mod tests {
 
     #[test]
     fn distinguishes_rustup_and_cargo_home_installers() {
-        let rustup = detect(
+        let rustup = detect_for_test(
             "rustc",
             Path::new("/home/me/.cargo/bin/rustc"),
             Path::new("/home/me/.cargo/bin/rustup"),
@@ -741,7 +792,7 @@ mod tests {
         assert_eq!(rustup.confidence, Confidence::Confirmed);
         assert_eq!(rustup.actions.update.as_deref(), Some("rustup update"));
 
-        let installer = detect(
+        let installer = detect_for_test(
             "rustup",
             Path::new("/home/me/.cargo/bin/rustup"),
             Path::new("/home/me/.cargo/bin/rustup"),
@@ -753,7 +804,7 @@ mod tests {
             Some("rustup self uninstall")
         );
 
-        let cargo = detect(
+        let cargo = detect_for_test(
             "rg",
             Path::new("/home/me/.cargo/bin/rg"),
             Path::new("/home/me/.cargo/bin/rg"),
@@ -768,7 +819,7 @@ mod tests {
     #[test]
     fn recognizes_macports_layout() {
         let path = Path::new("/opt/local/bin/fixture-tool-that-does-not-exist");
-        let result = detect("fixture-tool", path, path);
+        let result = detect_for_test("fixture-tool", path, path);
 
         assert_eq!(result.id, OwnerId::MacPorts);
         assert_eq!(result.kind(), OwnerKind::PackageManager);
@@ -782,7 +833,7 @@ mod tests {
     #[test]
     fn recognizes_operating_system_layout_without_removal_guidance() {
         let path = Path::new("/System/whowns-fixture-that-does-not-exist");
-        let result = detect("fixture-tool", path, path);
+        let result = detect_for_test("fixture-tool", path, path);
 
         assert_eq!(result.id, OwnerId::OperatingSystem);
         assert_eq!(result.kind(), OwnerKind::OperatingSystem);
@@ -794,7 +845,7 @@ mod tests {
     #[test]
     fn uses_manager_tool_name_in_asdf_actions() {
         let path = Path::new("/home/me/.asdf/installs/nodejs/22.3.0/bin/node");
-        let result = detect("node", path, path);
+        let result = detect_for_test("node", path, path);
         assert_eq!(result.package.as_deref(), Some("nodejs"));
         assert_eq!(
             result.actions.remove.as_deref(),
@@ -806,7 +857,7 @@ mod tests {
     fn detects_homebrew_package_and_version_from_real_path() {
         let link = Path::new("/opt/homebrew/bin/node");
         let real = Path::new("/opt/homebrew/Cellar/node/24.1.0/bin/node");
-        let result = detect("node", link, real);
+        let result = detect_for_test("node", link, real);
         assert_eq!(result.id, OwnerId::Homebrew);
         assert_eq!(result.package.as_deref(), Some("node"));
         assert_eq!(result.version.as_deref(), Some("24.1.0"));
@@ -822,7 +873,7 @@ mod tests {
         let path = Path::new("/home/me/.nvm/versions/node/v22.3.0/bin/node");
         let real = Path::new("/opt/homebrew/Cellar/node/24.1.0/bin/node");
 
-        let result = detect("node", path, real);
+        let result = detect_for_test("node", path, real);
 
         assert_eq!(result.id, OwnerId::Homebrew);
         assert_eq!(result.package.as_deref(), Some("node"));
@@ -838,7 +889,7 @@ mod tests {
         let _ = fs::remove_file(&link);
         symlink(cellar_target, &link).unwrap();
 
-        let result = detect(
+        let result = detect_for_test(
             "npm",
             &link,
             Path::new("/opt/homebrew/lib/node_modules/npm/bin/npm-cli.js"),
@@ -853,7 +904,7 @@ mod tests {
     #[test]
     fn leaves_unrecognized_usr_local_owner_unconfirmed() {
         let path = Path::new("/usr/local/bin/custom");
-        let result = detect("custom", path, path);
+        let result = detect_for_test("custom", path, path);
         assert_eq!(result.id, OwnerId::UnconfirmedOwner);
         assert_eq!(result.confidence, Confidence::Unknown);
         assert!(result.actions.update.is_none());
@@ -869,7 +920,7 @@ mod tests {
     #[test]
     fn detected_owners_carry_identity_independent_of_display_text() {
         let path = Path::new("/home/me/.sdkman/candidates/java/21.0.2-tem/bin/java");
-        let result = detect("java", path, path);
+        let result = detect_for_test("java", path, path);
 
         assert_eq!(result.id, OwnerId::Sdkman);
         assert_eq!(result.id.as_str(), "sdkman");
@@ -917,5 +968,25 @@ mod tests {
             .as_deref(),
             Some("stable-x86_64-unknown-linux-gnu")
         );
+    }
+
+    #[test]
+    fn manager_query_is_skipped_silently_when_the_manager_is_not_on_path() {
+        // No fixture manager binary exists anywhere near this path, so
+        // resolve_program("mise") fails before any subprocess is attempted;
+        // enrich_with_manager_query must not add evidence or fail for that.
+        let path =
+            Path::new("/home/me/.local/share/mise/installs/node/22.3.0/bin/whowns-fixture-node");
+        let mut result = detect_for_test("whowns-fixture-node", path, path);
+        let evidence_before = result.evidence.len();
+
+        enrich_with_manager_query(
+            &mut result,
+            "whowns-fixture-node",
+            path,
+            &CommandRunner::new(),
+        );
+
+        assert_eq!(result.evidence.len(), evidence_before);
     }
 }

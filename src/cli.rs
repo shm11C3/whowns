@@ -1,6 +1,6 @@
 use std::process::ExitCode;
 
-use crate::{graph, output};
+use crate::{exec, graph, output};
 
 #[derive(Debug, Eq, PartialEq)]
 enum Mode {
@@ -25,12 +25,13 @@ pub fn run(program: &str, arguments: impl Iterator<Item = String>) -> ExitCode {
         }
     };
 
+    let runner = exec::CommandRunner::new();
     let graphs = match &args.mode {
         Mode::Inspect(commands) => commands
             .iter()
-            .map(|command| graph::inspect(command))
+            .map(|command| graph::inspect(command, &runner))
             .collect(),
-        Mode::All => graph::all(args.show_missing),
+        Mode::All => graph::all(args.show_missing, &runner),
     };
 
     let result = if args.json {
@@ -46,6 +47,12 @@ pub fn run(program: &str, arguments: impl Iterator<Item = String>) -> ExitCode {
     if let Err(error) = result {
         eprintln!("error: could not write output: {error}");
         return ExitCode::FAILURE;
+    }
+
+    // A timed-out or unreadable manager query never fails the run; it is
+    // still surfaced here so it does not degrade silently.
+    for diagnostic in runner.diagnostics() {
+        eprintln!("note: {diagnostic}");
     }
 
     if matches!(args.mode, Mode::Inspect(_))
