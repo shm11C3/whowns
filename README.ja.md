@@ -126,7 +126,7 @@ whowns --all --show-missing
 
 ## JSON
 
-個別表示と一覧表示のどちらも同じ機械可読モデルを出力します。
+個別表示と一覧表示のどちらも、同じversion付き機械可読documentを出力します。
 
 ```sh
 whowns node --json
@@ -136,15 +136,17 @@ whowns --all --json
 概念モデルは次の構造です。
 
 ```text
-OwnershipGraph (command とその PATH resolutions)
-└── Resolution[] (active / shadowed, path, real_path)
-    └── OwnershipNode[] (近い管理元から順番に並ぶ)
-        ├── id (安定 ID) / name (表示名)
-        ├── kind
-        ├── package / version
-        ├── Confidence
-        ├── Evidence[]
-        └── ActionGuide
+JSON document
+├── schema_version: 1
+└── graphs: OwnershipGraph[] (command とその PATH resolutions)
+    └── Resolution[] (active / shadowed, path, real_path)
+        └── OwnershipNode[] (近い管理元から順番に並ぶ)
+            ├── id (安定 ID) / name (表示名)
+            ├── kind
+            ├── package / version
+            ├── Confidence
+            ├── Evidence[]
+            └── ActionGuide
 ```
 
 - `Resolution`: PATH 上の有効な実体と隠れている実体
@@ -153,6 +155,8 @@ OwnershipGraph (command とその PATH resolutions)
 - `Evidence`: PATH、symlink、filesystem、`pkgutil`、パッケージ照会、管理ツール照会などの根拠
 - `Confidence`: `confirmed`、`probable`、`unknown`
 - `ActionGuide`: 確認・更新・削除の候補コマンドと注意事項
+
+`schema_version` は `whowns` package versionとは独立してJSON contractをversion管理します。0.x系列では、optional fieldの追加はschema version 1内の互換変更とします。fieldの削除・rename、型や意味の変更、安定owner `id`の変更には新しいschema versionが必要です。consumerは対応するschema versionを選び、未知のfieldを無視してください。表示用の`name`はschema versionを変えずに変更される可能性があるため、機械的な識別には`id`を使用してください。
 
 ## 確信度
 

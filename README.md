@@ -125,7 +125,7 @@ The summary shows the active executable's owner chain, confidence, and shadowed 
 
 ## JSON
 
-Individual inspection and `--all` emit the same machine-readable model.
+Individual inspection and `--all` emit the same versioned machine-readable document.
 
 ```sh
 whowns node --json
@@ -133,15 +133,17 @@ whowns --all --json
 ```
 
 ```text
-OwnershipGraph (command and its PATH resolutions)
-└── Resolution[] (active / shadowed, path, real_path)
-    └── OwnershipNode[] (ordered nearest-first)
-        ├── id (stable) / name (display)
-        ├── kind
-        ├── package / version
-        ├── Confidence
-        ├── Evidence[]
-        └── ActionGuide
+JSON document
+├── schema_version: 1
+└── graphs: OwnershipGraph[] (commands and their PATH resolutions)
+    └── Resolution[] (active / shadowed, path, real_path)
+        └── OwnershipNode[] (ordered nearest-first)
+            ├── id (stable) / name (display)
+            ├── kind
+            ├── package / version
+            ├── Confidence
+            ├── Evidence[]
+            └── ActionGuide
 ```
 
 - `Resolution`: the active executable and every shadowed executable found in `PATH`
@@ -150,6 +152,8 @@ OwnershipGraph (command and its PATH resolutions)
 - `Evidence`: paths, symlinks, filesystem targets, receipts, package queries, and manager queries
 - `Confidence`: `confirmed`, `probable`, or `unknown`
 - `ActionGuide`: suggested inspect, update, and removal commands with safety notes
+
+`schema_version` versions the JSON contract independently from the `whowns` package version. During the 0.x series, adding optional fields is compatible within schema version 1. Removing or renaming fields, changing their types or meanings, or changing stable owner `id` values requires a new schema version. Consumers should select supported schema versions and ignore fields they do not recognize. The human-facing `name` may change without a schema-version change; use `id` for machine identity.
 
 ## Confidence
 

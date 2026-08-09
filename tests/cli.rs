@@ -2,9 +2,10 @@
 
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -97,6 +98,22 @@ fn stdout(output: &Output) -> String {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8(output.stderr.clone()).unwrap()
+}
+
+fn assert_valid_json(json: &[u8]) {
+    let mut child = Command::new("python3")
+        .args(["-c", "import json, sys; json.load(sys.stdin)"])
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("python3 is required to validate JSON in tests");
+    child.stdin.as_mut().unwrap().write_all(json).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "invalid JSON: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -543,7 +560,10 @@ fn emits_the_common_ownership_graph_as_json() {
     let stdout = stdout(&output);
 
     assert!(output.status.success());
-    assert!(stdout.starts_with("[\n"));
+    assert_valid_json(&output.stdout);
+    assert!(stdout.starts_with("{\n"));
+    assert!(stdout.contains("\"schema_version\": 1"));
+    assert!(stdout.contains("\"graphs\""));
     assert!(stdout.contains("\"command\": \"node\""));
     assert!(stdout.contains("\"status\": \"active\""));
     assert!(stdout.contains("\"id\": \"homebrew\""));
@@ -582,6 +602,8 @@ fn all_mode_reuses_the_individual_diagnostic_model() {
     let individual = sandbox.run(WHOWNS, &["node", "--json"], &[&bin]);
     let all = sandbox.run(WHOWNS, &["--all", "--json"], &[&bin]);
 
+    assert_valid_json(&individual.stdout);
+    assert_valid_json(&all.stdout);
     assert_eq!(individual.status.code(), all.status.code());
     assert_eq!(individual.stdout, all.stdout);
     assert_eq!(individual.stderr, all.stderr);
