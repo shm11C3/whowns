@@ -15,6 +15,17 @@ The name compresses `who owns` into six characters. The tool focuses on explaini
 
 `whowns` is a standalone Rust binary. Users do not need Node.js, Python, or another runtime to run it.
 
+## Table of contents
+
+- [Inspect a command](#inspect-a-command)
+- [List common runtimes](#list-common-runtimes)
+- [JSON](#json)
+- [Confidence](#confidence)
+- [Recognized owners](#recognized-owners)
+- [Installation](#installation)
+- [Development](#development)
+- [Current boundaries](#current-boundaries)
+
 ## Inspect a command
 
 ```console
