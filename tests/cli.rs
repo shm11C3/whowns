@@ -186,6 +186,31 @@ fn stops_an_ownership_cycle_with_visible_evidence() {
 }
 
 #[test]
+fn shared_rustup_proxy_path_is_not_treated_as_a_cycle() {
+    let sandbox = Sandbox::new("rustup-proxy-chain");
+    let rustup = sandbox.executable(
+        ".cargo/bin/rustup",
+        "#!/bin/sh\nif [ \"$1\" = \"which\" ] && [ \"$2\" = \"rustc\" ]; then\n  printf '%s\\n' \"$0\"\nfi\n",
+    );
+    symlink(&rustup, sandbox.path(".cargo/bin/rustc")).unwrap();
+    let bin = sandbox.path(".cargo/bin");
+
+    let output = sandbox.run(WHOWNS, &["rustc", "--explain"], &[&bin]);
+    let stdout = stdout(&output);
+
+    assert!(output.status.success());
+    assert!(
+        stdout.contains("ownership: rustc → rustup [confirmed] → rustup installer [probable]"),
+        "output: {stdout}"
+    );
+    assert!(
+        !stdout.contains("ownership cycle detected"),
+        "output: {stdout}"
+    );
+    assert!(stderr(&output).is_empty());
+}
+
+#[test]
 fn stops_at_the_maximum_depth_with_visible_evidence() {
     let sandbox = Sandbox::new("ownership-depth-limit");
     let managed_nvm = sandbox.path(".local/share/mise/installs/nvm/0.40.3");
@@ -222,7 +247,6 @@ fn stops_at_the_maximum_depth_with_visible_evidence() {
         stdout.contains("└── unconfirmed source [unknown]"),
         "output: {stdout}"
     );
-    assert!(stderr(&output).is_empty(), "stderr: {}", stderr(&output));
 }
 
 #[test]

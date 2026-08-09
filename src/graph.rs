@@ -75,8 +75,7 @@ fn ownership_chain(
     runtime_path: &Path,
     runner: &CommandRunner,
 ) -> Vec<OwnershipNode> {
-    let mut visited_owners = vec![primary.id];
-    let mut visited_paths = vec![path_identity(runtime_path)];
+    let mut visited = vec![(primary.id, path_identity(runtime_path))];
     let mut current_path = runtime_path.to_path_buf();
     let mut owners = vec![primary];
 
@@ -104,11 +103,12 @@ fn ownership_chain(
         }
 
         let upstream_path = upstream.path.map(|path| path_identity(&path));
-        let repeated_owner = visited_owners.contains(&upstream.node.id);
-        let repeated_path = upstream_path
-            .as_ref()
-            .is_some_and(|path| visited_paths.contains(path));
-        if repeated_owner || repeated_path {
+        let repeated_identity = upstream_path.as_ref().is_some_and(|path| {
+            visited
+                .iter()
+                .any(|(owner, visited_path)| *owner == upstream.node.id && visited_path == path)
+        });
+        if repeated_identity {
             let path = upstream_path.as_deref().map_or_else(
                 || "an unknown path".into(),
                 |path| path.display().to_string(),
@@ -120,9 +120,8 @@ fn ownership_chain(
             break;
         }
 
-        visited_owners.push(upstream.node.id);
         if let Some(path) = upstream_path {
-            visited_paths.push(path.clone());
+            visited.push((upstream.node.id, path.clone()));
             current_path = path;
         }
         owners.push(upstream.node);
