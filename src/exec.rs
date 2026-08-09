@@ -124,12 +124,15 @@ impl CommandRunner {
     fn record_diagnostics(&self, program: &Path, arguments: &[&OsStr], result: &QueryResult) {
         // Lossy here is fine: this is a human-readable note, not the actual
         // argument handed to the child (that stays byte-exact in `query`).
-        let rendered_arguments = arguments
-            .iter()
-            .map(|argument| argument.to_string_lossy())
+        let rendered = std::iter::once(program.display().to_string())
+            .chain(
+                arguments
+                    .iter()
+                    .map(|argument| argument.to_string_lossy().into_owned()),
+            )
             .collect::<Vec<_>>()
             .join(" ");
-        let invocation = format!("`{} {rendered_arguments}`", program.display());
+        let invocation = format!("`{rendered}`");
         match result {
             Err(failure) => self
                 .diagnostics
@@ -241,15 +244,18 @@ fn run_with_timeout(program: &Path, arguments: &[&OsStr], timeout: Duration) -> 
     // Bound the wait for output by what remains of the same deadline instead
     // of joining unconditionally, so that case cannot outlast the timeout
     // either; whatever wasn't read in time is reported as truncated rather
-    // than blocking on it. Any such descendant is also killed rather than
-    // left to run past the deadline on its own.
+    // than blocking on it.
+    //
+    // Not killing the process group here: `try_wait` above already reaped
+    // the direct child, so the kernel is free to recycle `pid` for an
+    // unrelated process at any point after that. Signaling `-pid` this late
+    // could hit a different process group entirely. That reap-before-kill
+    // hazard doesn't apply on the timeout path above, where the group is
+    // signaled before the child has been waited on.
     let (stdout, truncated) =
         match output_rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
             Ok(result) => result,
-            Err(_) => {
-                kill_process_group(pid);
-                (Vec::new(), true)
-            }
+            Err(_) => (Vec::new(), true),
         };
     Ok(QueryOutput {
         success: status.success(),
@@ -416,7 +422,6 @@ mod tests {
             ),
         )
         .unwrap();
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mut permissions = fs::metadata(&script).unwrap().permissions();
@@ -477,7 +482,6 @@ mod tests {
             format!("#!/bin/sh\nprintf '%s' \"$1\" > '{}'\n", outfile.display()),
         )
         .unwrap();
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mut permissions = fs::metadata(&script).unwrap().permissions();
