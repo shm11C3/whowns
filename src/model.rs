@@ -40,218 +40,102 @@ impl OwnerKind {
     }
 }
 
-/// Stable machine-facing identity of an owner.
-///
-/// Ownership resolution, action guides, and detection rules branch on this
-/// value only. Display text is derived from it, never the other way around, so
-/// renaming an owner cannot change ownership-chain behavior.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OwnerId {
-    Nix,
-    Homebrew,
-    Nvm,
-    Fnm,
-    Volta,
-    Mise,
-    Asdf,
-    Pyenv,
-    Rbenv,
-    Sdkman,
-    Uv,
-    Rustup,
-    RustupInstaller,
-    CargoInstall,
-    PnpmHome,
-    DenoInstaller,
-    BunInstaller,
-    // Installer receipts are only detected on macOS.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    MacosInstaller,
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    PythonOrgInstaller,
-    MacPorts,
-    // Operating-system package queries only run on Linux.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    Dpkg,
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    Rpm,
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    Pacman,
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    Apk,
-    OperatingSystem,
-    UnconfirmedOwner,
-    UnconfirmedSource,
+// Defines OwnerId, its id/display_name/kind accessors, and the test-only
+// ALL list from a single variant table below, instead of maintaining the
+// enum and several derived matches as separate hand-written lists.
+//
+// Earlier revisions kept OwnerId and `ALL` as independent lists (or `ALL`
+// derived from an auxiliary `next()` chain): both let a variant compile into
+// as_str/display_name/kind without actually appearing in `ALL`, which
+// silently weakens the identity tests for that variant. A macro that
+// generates every one of these from the same token list makes that
+// omission impossible: there is exactly one place to add an owner, and nothing
+// else to keep in sync.
+macro_rules! owner_ids {
+    (
+        $(
+            $(#[$meta:meta])*
+            $variant:ident { id: $id:literal, display: $display:literal, kind: $kind:expr }
+        ),+ $(,)?
+    ) => {
+        /// Stable machine-facing identity of an owner.
+        ///
+        /// Ownership resolution, action guides, and detection rules branch on this
+        /// value only. Display text is derived from it, never the other way around, so
+        /// renaming an owner cannot change ownership-chain behavior.
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub enum OwnerId {
+            $($(#[$meta])* $variant),+
+        }
+
+        impl OwnerId {
+            /// Stable snake_case identifier. Part of the machine-readable contract:
+            /// changing one of these values is a breaking change for `--json` consumers.
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $id),+
+                }
+            }
+
+            /// Human-readable presentation text. Free to change without affecting
+            /// ownership resolution or the machine-readable model.
+            pub const fn display_name(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $display),+
+                }
+            }
+
+            /// How the owner installs software. Derived from identity so an owner
+            /// cannot be classified inconsistently between detection sites.
+            pub const fn kind(self) -> OwnerKind {
+                match self {
+                    $(Self::$variant => $kind),+
+                }
+            }
+
+            /// Every identity the tool can report, in declaration order.
+            #[cfg(test)]
+            pub const ALL: &'static [Self] = &[$(Self::$variant),+];
+        }
+    };
 }
 
-impl OwnerId {
-    /// Every identity the tool can report, in `next()` order. Derived from
-    /// `next()` at compile time (rather than hand-written) so it cannot
-    /// silently omit a variant that compiles there: `all()` panics during
-    /// const evaluation, which is a build failure, if `COUNT` and the
-    /// `next()` chain ever disagree on how many variants exist.
-    #[cfg(test)]
-    pub const ALL: [Self; Self::COUNT] = Self::all();
-
-    #[cfg(test)]
-    const COUNT: usize = 27;
-
-    #[cfg(test)]
-    const fn all() -> [Self; Self::COUNT] {
-        let mut array = [Self::Nix; Self::COUNT];
-        let mut current = Self::Nix;
-        let mut index = 0;
-        loop {
-            array[index] = current;
-            index += 1;
-            match current.next() {
-                Some(next) => current = next,
-                None => break,
-            }
-        }
-        assert!(
-            index == Self::COUNT,
-            "OwnerId::COUNT is out of sync with the next() chain"
-        );
-        array
-    }
-
-    /// Enumeration order backing `ALL`. Exhaustive, like `as_str`/
-    /// `display_name`/`kind`: adding a variant forces a new arm here, and
-    /// wiring it into the chain is what makes it show up in `ALL` — there is
-    /// no separate list to remember to update.
-    #[cfg(test)]
-    const fn next(self) -> Option<Self> {
-        match self {
-            Self::Nix => Some(Self::Homebrew),
-            Self::Homebrew => Some(Self::MacPorts),
-            Self::MacPorts => Some(Self::Nvm),
-            Self::Nvm => Some(Self::Fnm),
-            Self::Fnm => Some(Self::Volta),
-            Self::Volta => Some(Self::Mise),
-            Self::Mise => Some(Self::Asdf),
-            Self::Asdf => Some(Self::Pyenv),
-            Self::Pyenv => Some(Self::Rbenv),
-            Self::Rbenv => Some(Self::Sdkman),
-            Self::Sdkman => Some(Self::Uv),
-            Self::Uv => Some(Self::Rustup),
-            Self::Rustup => Some(Self::RustupInstaller),
-            Self::RustupInstaller => Some(Self::CargoInstall),
-            Self::CargoInstall => Some(Self::PnpmHome),
-            Self::PnpmHome => Some(Self::DenoInstaller),
-            Self::DenoInstaller => Some(Self::BunInstaller),
-            Self::BunInstaller => Some(Self::MacosInstaller),
-            Self::MacosInstaller => Some(Self::PythonOrgInstaller),
-            Self::PythonOrgInstaller => Some(Self::Dpkg),
-            Self::Dpkg => Some(Self::Rpm),
-            Self::Rpm => Some(Self::Pacman),
-            Self::Pacman => Some(Self::Apk),
-            Self::Apk => Some(Self::OperatingSystem),
-            Self::OperatingSystem => Some(Self::UnconfirmedOwner),
-            Self::UnconfirmedOwner => Some(Self::UnconfirmedSource),
-            Self::UnconfirmedSource => None,
-        }
-    }
-
-    /// Stable snake_case identifier. Part of the machine-readable contract:
-    /// changing one of these values is a breaking change for `--json` consumers.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Nix => "nix",
-            Self::Homebrew => "homebrew",
-            Self::Nvm => "nvm",
-            Self::Fnm => "fnm",
-            Self::Volta => "volta",
-            Self::Mise => "mise",
-            Self::Asdf => "asdf",
-            Self::Pyenv => "pyenv",
-            Self::Rbenv => "rbenv",
-            Self::Sdkman => "sdkman",
-            Self::Uv => "uv",
-            Self::Rustup => "rustup",
-            Self::RustupInstaller => "rustup_installer",
-            Self::CargoInstall => "cargo_install",
-            Self::PnpmHome => "pnpm_home",
-            Self::DenoInstaller => "deno_installer",
-            Self::BunInstaller => "bun_installer",
-            Self::MacosInstaller => "macos_installer",
-            Self::PythonOrgInstaller => "python_org_installer",
-            Self::MacPorts => "macports",
-            Self::Dpkg => "dpkg",
-            Self::Rpm => "rpm",
-            Self::Pacman => "pacman",
-            Self::Apk => "apk",
-            Self::OperatingSystem => "operating_system",
-            Self::UnconfirmedOwner => "unconfirmed_owner",
-            Self::UnconfirmedSource => "unconfirmed_source",
-        }
-    }
-
-    /// Human-readable presentation text. Free to change without affecting
-    /// ownership resolution or the machine-readable model.
-    pub const fn display_name(self) -> &'static str {
-        match self {
-            Self::Nix => "Nix",
-            Self::Homebrew => "Homebrew",
-            Self::Nvm => "nvm",
-            Self::Fnm => "fnm",
-            Self::Volta => "Volta",
-            Self::Mise => "mise",
-            Self::Asdf => "asdf",
-            Self::Pyenv => "pyenv",
-            Self::Rbenv => "rbenv",
-            Self::Sdkman => "SDKMAN!",
-            Self::Uv => "uv",
-            Self::Rustup => "rustup",
-            Self::RustupInstaller => "rustup installer",
-            Self::CargoInstall => "cargo install",
-            Self::PnpmHome => "pnpm home",
-            Self::DenoInstaller => "Deno installer",
-            Self::BunInstaller => "Bun installer",
-            Self::MacosInstaller => "macOS Installer (.pkg)",
-            Self::PythonOrgInstaller => "python.org macOS installer",
-            Self::MacPorts => "MacPorts",
-            Self::Dpkg => "dpkg",
-            Self::Rpm => "RPM",
-            Self::Pacman => "pacman",
-            Self::Apk => "apk",
-            Self::OperatingSystem => "operating system",
-            Self::UnconfirmedOwner => "unconfirmed owner",
-            Self::UnconfirmedSource => "unconfirmed source",
-        }
-    }
-
-    /// How the owner installs software. Derived from identity so an owner
-    /// cannot be classified inconsistently between detection sites.
-    pub const fn kind(self) -> OwnerKind {
-        match self {
-            Self::Nix
-            | Self::Homebrew
-            | Self::MacPorts
-            | Self::Dpkg
-            | Self::Rpm
-            | Self::Pacman
-            | Self::Apk => OwnerKind::PackageManager,
-            Self::Nvm
-            | Self::Fnm
-            | Self::Volta
-            | Self::Mise
-            | Self::Asdf
-            | Self::Pyenv
-            | Self::Rbenv
-            | Self::Sdkman
-            | Self::Uv
-            | Self::Rustup => OwnerKind::VersionManager,
-            Self::RustupInstaller
-            | Self::CargoInstall
-            | Self::PnpmHome
-            | Self::DenoInstaller
-            | Self::BunInstaller => OwnerKind::ToolInstaller,
-            Self::MacosInstaller | Self::PythonOrgInstaller => OwnerKind::Installer,
-            Self::OperatingSystem => OwnerKind::OperatingSystem,
-            Self::UnconfirmedOwner | Self::UnconfirmedSource => OwnerKind::Unknown,
-        }
-    }
+owner_ids! {
+    Nix { id: "nix", display: "Nix", kind: OwnerKind::PackageManager },
+    Homebrew { id: "homebrew", display: "Homebrew", kind: OwnerKind::PackageManager },
+    Nvm { id: "nvm", display: "nvm", kind: OwnerKind::VersionManager },
+    Fnm { id: "fnm", display: "fnm", kind: OwnerKind::VersionManager },
+    Volta { id: "volta", display: "Volta", kind: OwnerKind::VersionManager },
+    Mise { id: "mise", display: "mise", kind: OwnerKind::VersionManager },
+    Asdf { id: "asdf", display: "asdf", kind: OwnerKind::VersionManager },
+    Pyenv { id: "pyenv", display: "pyenv", kind: OwnerKind::VersionManager },
+    Rbenv { id: "rbenv", display: "rbenv", kind: OwnerKind::VersionManager },
+    Sdkman { id: "sdkman", display: "SDKMAN!", kind: OwnerKind::VersionManager },
+    Uv { id: "uv", display: "uv", kind: OwnerKind::VersionManager },
+    Rustup { id: "rustup", display: "rustup", kind: OwnerKind::VersionManager },
+    RustupInstaller { id: "rustup_installer", display: "rustup installer", kind: OwnerKind::ToolInstaller },
+    CargoInstall { id: "cargo_install", display: "cargo install", kind: OwnerKind::ToolInstaller },
+    PnpmHome { id: "pnpm_home", display: "pnpm home", kind: OwnerKind::ToolInstaller },
+    DenoInstaller { id: "deno_installer", display: "Deno installer", kind: OwnerKind::ToolInstaller },
+    BunInstaller { id: "bun_installer", display: "Bun installer", kind: OwnerKind::ToolInstaller },
+    // Installer receipts are only detected on macOS.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    MacosInstaller { id: "macos_installer", display: "macOS Installer (.pkg)", kind: OwnerKind::Installer },
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    PythonOrgInstaller { id: "python_org_installer", display: "python.org macOS installer", kind: OwnerKind::Installer },
+    MacPorts { id: "macports", display: "MacPorts", kind: OwnerKind::PackageManager },
+    // Operating-system package queries only run on Linux.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Dpkg { id: "dpkg", display: "dpkg", kind: OwnerKind::PackageManager },
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Rpm { id: "rpm", display: "RPM", kind: OwnerKind::PackageManager },
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Pacman { id: "pacman", display: "pacman", kind: OwnerKind::PackageManager },
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Apk { id: "apk", display: "apk", kind: OwnerKind::PackageManager },
+    OperatingSystem { id: "operating_system", display: "operating system", kind: OwnerKind::OperatingSystem },
+    UnconfirmedOwner { id: "unconfirmed_owner", display: "unconfirmed owner", kind: OwnerKind::Unknown },
+    UnconfirmedSource { id: "unconfirmed_source", display: "unconfirmed source", kind: OwnerKind::Unknown },
 }
 
 #[derive(Debug, Eq, PartialEq)]
