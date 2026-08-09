@@ -58,28 +58,29 @@ fn upstream_owner(primary: &OwnershipNode, runtime_path: &Path) -> Option<Owners
         return None;
     }
 
-    if primary.name == "nvm" {
-        return Some(source_from_root("nvm", nvm_root(runtime_path)));
+    let manager = detect::owner_id(primary)?;
+    if manager == detect::OwnerId::Nvm {
+        return Some(source_from_root(manager, nvm_root(runtime_path)));
     }
-    if primary.name == "SDKMAN!" {
-        return Some(source_from_root("SDKMAN!", sdkman_root(runtime_path)));
+    if manager == detect::OwnerId::Sdkman {
+        return Some(source_from_root(manager, sdkman_root(runtime_path)));
     }
 
-    let manager_command = detect::manager_executable(&primary.name)?;
+    let manager_command = manager.manager_executable()?;
     let manager_resolution = scan::find_executables(manager_command)
         .into_iter()
         .find(|resolution| resolution.active);
     let Some(manager_resolution) = manager_resolution else {
-        return Some(detect::unconfirmed_manager_source(&primary.name, None));
+        return Some(detect::unconfirmed_manager_source(manager, None));
     };
     let source = detect::detect(
         manager_command,
         &manager_resolution.path,
         &manager_resolution.real_path,
     );
-    if source.name == primary.name {
+    if detect::owner_id(&source) == Some(manager) {
         Some(detect::unconfirmed_manager_source(
-            &primary.name,
+            manager,
             Some(&manager_resolution.path),
         ))
     } else {
@@ -87,13 +88,13 @@ fn upstream_owner(primary: &OwnershipNode, runtime_path: &Path) -> Option<Owners
     }
 }
 
-fn source_from_root(manager: &str, root: Option<PathBuf>) -> OwnershipNode {
+fn source_from_root(manager: detect::OwnerId, root: Option<PathBuf>) -> OwnershipNode {
     let Some(root) = root else {
         return detect::unconfirmed_manager_source(manager, None);
     };
     let real_root = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
-    let source = detect::detect(manager, &root, &real_root);
-    if source.name == manager {
+    let source = detect::detect(manager.name(), &root, &real_root);
+    if detect::owner_id(&source) == Some(manager) {
         detect::unconfirmed_manager_source(manager, Some(&root))
     } else {
         source
