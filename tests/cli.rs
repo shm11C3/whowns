@@ -218,6 +218,37 @@ fn confirms_a_mise_managed_runtime_via_its_which_query() {
 }
 
 #[test]
+fn rejects_truncated_manager_query_output_instead_of_using_a_partial_value() {
+    // A manager that misbehaves and floods stdout must not have that
+    // truncated 64-KiB prefix treated as a real path/version and enriched
+    // into ownership evidence or generated action commands.
+    let sandbox = Sandbox::new("truncated-manager-query");
+    let node = sandbox.executable(
+        ".local/share/mise/installs/node/22.3.0/bin/node",
+        "#!/bin/sh\nexit 0\n",
+    );
+    let node_bin = node.parent().unwrap().to_path_buf();
+    let tools = sandbox.path("tools");
+    sandbox.executable(
+        "tools/mise",
+        "#!/bin/sh\nif [ \"$1\" = \"which\" ]; then\n  /usr/bin/yes | /usr/bin/head -c 200000\nfi\n",
+    );
+
+    let output = sandbox.run(WHOWNS, &["node", "--explain"], &[&node_bin, &tools]);
+    let stdout = stdout(&output);
+
+    assert!(output.status.success());
+    assert!(
+        stdout.contains("mise which node` output was truncated; ignoring it"),
+        "output: {stdout}"
+    );
+    assert!(
+        !stdout.contains("returned `"),
+        "a truncated result must not be reported as a returned value, output: {stdout}"
+    );
+}
+
+#[test]
 fn skips_the_manager_query_silently_when_mise_itself_is_not_on_path() {
     // The sandbox PATH deliberately has no `mise` executable anywhere on it,
     // regardless of what happens to be installed on the host running this

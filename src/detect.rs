@@ -319,11 +319,16 @@ struct ManagerQuery {
 /// The second search could pick a different shim than the one `whowns`
 /// inspected if PATH changed between the two lookups, so reusing our own
 /// resolution keeps the query honest about which binary it is questioning.
+///
+/// Uses the PATH entry itself, not its canonicalized target: a manager whose
+/// behavior depends on the invoked path or name (a multi-call binary reached
+/// through a symlink, for instance) would misbehave if invoked under its
+/// resolved-away canonical name instead of the one actually found on PATH.
 fn resolve_program(name: &str) -> Option<PathBuf> {
     scan::find_executables(name)
         .into_iter()
         .find(|resolution| resolution.active)
-        .map(|resolution| resolution.real_path)
+        .map(|resolution| resolution.path)
 }
 
 fn manager_query(
@@ -349,6 +354,13 @@ fn manager_query(
             evidence: Evidence::new(
                 "manager query",
                 format!("`{invocation}` {}", failure.describe()),
+            ),
+        }),
+        Ok(output) if output.success && output.truncated => Some(ManagerQuery {
+            result: None,
+            evidence: Evidence::new(
+                "manager query",
+                format!("`{invocation}` output was truncated; ignoring it"),
             ),
         }),
         Ok(output) if output.success => {
