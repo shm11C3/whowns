@@ -9,6 +9,8 @@
 
 `whowns` answers a deceptively simple question: "What installed and manages this command?"
 
+`which` is commonly used to find the executable that a command resolves to on `PATH`. Even when `which -a` lists every matching executable, it does not explain which package or version manager owns them or how to maintain them. `whowns` starts where path lookup ends: it connects active and shadowed executables to their ownership chain, supporting evidence, and the manager command to use next.
+
 The name compresses `who owns` into six characters. The tool focuses on explaining one command at a time instead of treating package inventory as its primary purpose. It answers:
 
 - Which executable is active?
