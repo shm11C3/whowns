@@ -7,6 +7,70 @@ pub enum Confidence {
     Unknown,
 }
 
+/// What an evidence item establishes about an ownership claim.
+///
+/// The variants deliberately describe semantics rather than detector names.
+/// Confidence is derived from this closed set, so a detector cannot attach an
+/// arbitrary confidence label to an otherwise weak claim.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EvidenceKind {
+    PathEntry,
+    SymlinkTarget,
+    ResolvedTarget,
+    ManagedPathLayout,
+    OperatingSystemPath,
+    PackageDatabaseOwnership,
+    PackageDatabaseQuery,
+    PackageReceiptOwnership,
+    PackageReceiptMetadata,
+    InstalledPackageReceipt,
+    ManagerQueryMatch,
+    ManagerQuery,
+    Unconfirmed,
+    ManagerLocation,
+    ManagerLookup,
+}
+
+impl EvidenceKind {
+    pub const fn source(self) -> &'static str {
+        match self {
+            Self::PathEntry => "PATH",
+            Self::SymlinkTarget => "symlink",
+            Self::ResolvedTarget => "filesystem",
+            Self::ManagedPathLayout => "managed path",
+            Self::OperatingSystemPath => "OS path",
+            Self::PackageDatabaseOwnership | Self::PackageDatabaseQuery => "package query",
+            Self::PackageReceiptOwnership
+            | Self::PackageReceiptMetadata
+            | Self::InstalledPackageReceipt => "pkgutil",
+            Self::ManagerQueryMatch | Self::ManagerQuery => "manager query",
+            Self::Unconfirmed => "unconfirmed",
+            Self::ManagerLocation => "manager location",
+            Self::ManagerLookup => "manager lookup",
+        }
+    }
+
+    pub const fn confidence(self) -> Confidence {
+        match self {
+            Self::PackageDatabaseOwnership
+            | Self::PackageReceiptOwnership
+            | Self::ManagerQueryMatch => Confidence::Confirmed,
+            Self::ManagedPathLayout | Self::OperatingSystemPath | Self::InstalledPackageReceipt => {
+                Confidence::Probable
+            }
+            Self::PathEntry
+            | Self::SymlinkTarget
+            | Self::ResolvedTarget
+            | Self::PackageDatabaseQuery
+            | Self::PackageReceiptMetadata
+            | Self::ManagerQuery
+            | Self::Unconfirmed
+            | Self::ManagerLocation
+            | Self::ManagerLookup => Confidence::Unknown,
+        }
+    }
+}
+
 impl Confidence {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -140,16 +204,24 @@ owner_ids! {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Evidence {
-    pub source: String,
+    pub kind: EvidenceKind,
     pub detail: String,
 }
 
 impl Evidence {
-    pub fn new(source: impl Into<String>, detail: impl Into<String>) -> Self {
+    pub fn new(kind: EvidenceKind, detail: impl Into<String>) -> Self {
         Self {
-            source: source.into(),
+            kind,
             detail: detail.into(),
         }
+    }
+
+    pub fn source(&self) -> &'static str {
+        self.kind.source()
+    }
+
+    pub fn confidence(&self) -> Confidence {
+        self.kind.confidence()
     }
 }
 
@@ -166,18 +238,51 @@ pub struct OwnershipNode {
     pub id: OwnerId,
     pub package: Option<String>,
     pub version: Option<String>,
-    pub confidence: Confidence,
     pub evidence: Vec<Evidence>,
     pub actions: ActionGuide,
 }
 
 impl OwnershipNode {
+    pub fn new(
+        id: OwnerId,
+        package: Option<String>,
+        version: Option<String>,
+        evidence: Vec<Evidence>,
+        actions: ActionGuide,
+    ) -> Self {
+        Self {
+            id,
+            package,
+            version,
+            evidence,
+            actions,
+        }
+    }
+
     pub fn display_name(&self) -> &'static str {
         self.id.display_name()
     }
 
     pub fn kind(&self) -> OwnerKind {
         self.id.kind()
+    }
+
+    pub fn confidence(&self) -> Confidence {
+        if self
+            .evidence
+            .iter()
+            .any(|evidence| evidence.confidence() == Confidence::Confirmed)
+        {
+            Confidence::Confirmed
+        } else if self
+            .evidence
+            .iter()
+            .any(|evidence| evidence.confidence() == Confidence::Probable)
+        {
+            Confidence::Probable
+        } else {
+            Confidence::Unknown
+        }
     }
 }
 
@@ -269,16 +374,52 @@ mod tests {
 
     #[test]
     fn owner_kind_is_derived_from_identity_not_stored_per_node() {
-        let node = OwnershipNode {
-            id: OwnerId::Rustup,
-            package: None,
-            version: None,
-            confidence: Confidence::Confirmed,
-            evidence: vec![],
-            actions: ActionGuide::default(),
-        };
+        let node = OwnershipNode::new(OwnerId::Rustup, None, None, vec![], ActionGuide::default());
         assert_eq!(node.kind(), OwnerKind::VersionManager);
         assert_eq!(node.display_name(), "rustup");
         assert_eq!(OwnerId::RustupInstaller.kind(), OwnerKind::ToolInstaller);
+    }
+
+    #[test]
+    fn confidence_is_derived_from_the_strongest_typed_evidence() {
+        let cases = [
+            (
+                EvidenceKind::PackageDatabaseOwnership,
+                Confidence::Confirmed,
+            ),
+            (EvidenceKind::ManagedPathLayout, Confidence::Probable),
+            (EvidenceKind::Unconfirmed, Confidence::Unknown),
+        ];
+
+        for (kind, expected) in cases {
+            let node = OwnershipNode::new(
+                OwnerId::Homebrew,
+                None,
+                None,
+                vec![Evidence::new(kind, "fixture")],
+                ActionGuide::default(),
+            );
+            assert_eq!(node.confidence(), expected, "evidence kind: {kind:?}");
+        }
+    }
+
+    #[test]
+    fn confirming_evidence_outweighs_weaker_context() {
+        let node = OwnershipNode::new(
+            OwnerId::MacPorts,
+            None,
+            None,
+            vec![
+                Evidence::new(EvidenceKind::PathEntry, "fixture path"),
+                Evidence::new(EvidenceKind::ManagedPathLayout, "MacPorts prefix"),
+                Evidence::new(
+                    EvidenceKind::PackageDatabaseOwnership,
+                    "MacPorts registry owns the path",
+                ),
+            ],
+            ActionGuide::default(),
+        );
+
+        assert_eq!(node.confidence(), Confidence::Confirmed);
     }
 }

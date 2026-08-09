@@ -121,6 +121,7 @@ impl OwnerId {
         version: Option<&str>,
         path: &Path,
     ) -> ActionGuide {
+        let has_package = package.is_some();
         let tool = shell_quote(package.unwrap_or(command));
         let command = shell_quote(command);
         let version = shell_quote(version.unwrap_or("<version>"));
@@ -243,8 +244,9 @@ impl OwnerId {
             },
             Self::MacPorts => ActionGuide {
                 inspect: Some(format!("port provides {path}")),
-                note: Some("Resolve the owning port first, then use `port upgrade <port>` or `port uninstall <port>`.".into()),
-                ..ActionGuide::default()
+                update: has_package.then(|| format!("port upgrade {package}")),
+                remove: has_package.then(|| format!("port uninstall {package}")),
+                note: (!has_package).then(|| "Resolve the owning port first, then use `port upgrade <port>` or `port uninstall <port>`.".into()),
             },
             Self::Dpkg => ActionGuide {
                 inspect: Some(format!("dpkg-query -S {path}")),

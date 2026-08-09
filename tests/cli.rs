@@ -104,9 +104,9 @@ fn explains_a_runtime_manager_and_the_managers_installation_source() {
     let stdout = stdout(&output);
 
     assert!(output.status.success());
-    assert!(stdout.contains("ownership: node → nvm [confirmed] → mise [confirmed]"));
-    assert!(stdout.contains("├── nvm [confirmed]"));
-    assert!(stdout.contains("└── mise [confirmed]"));
+    assert!(stdout.contains("ownership: node → nvm [probable] → mise [probable]"));
+    assert!(stdout.contains("├── nvm [probable]"));
+    assert!(stdout.contains("└── mise [probable]"));
     assert!(stdout.contains("kind: version_manager"));
 }
 
@@ -143,7 +143,7 @@ fn emits_the_common_ownership_graph_as_json() {
     assert!(stdout.contains("\"status\": \"active\""));
     assert!(stdout.contains("\"id\": \"homebrew\""));
     assert!(stdout.contains("\"name\": \"Homebrew\""));
-    assert!(stdout.contains("\"confidence\": \"confirmed\""));
+    assert!(stdout.contains("\"confidence\": \"probable\""));
     assert!(stdout.contains("\"action_guide\""));
     assert!(stderr(&output).is_empty());
 }
@@ -214,6 +214,7 @@ fn confirms_a_mise_managed_runtime_via_its_which_query() {
         stdout.contains("and it matches the resolved executable"),
         "output: {stdout}"
     );
+    assert!(stdout.contains("mise [confirmed]"), "output: {stdout}");
     assert!(stderr(&output).is_empty());
 }
 
@@ -266,7 +267,7 @@ fn skips_the_manager_query_silently_when_mise_itself_is_not_on_path() {
     let stdout = stdout(&output);
 
     assert!(output.status.success());
-    assert!(stdout.contains("mise [confirmed]"), "output: {stdout}");
+    assert!(stdout.contains("mise [probable]"), "output: {stdout}");
     assert!(
         !stdout.contains("manager query"),
         "no manager query should have been attempted, output: {stdout}"

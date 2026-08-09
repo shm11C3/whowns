@@ -46,7 +46,7 @@ node
 └── ○ shadowed
     ├── executable: /opt/homebrew/bin/node
     ├── resolves to: /opt/homebrew/Cellar/node/25.6.1_1/bin/node
-    ├── ownership: node → Homebrew [confirmed]
+    ├── ownership: node → Homebrew [probable]
     └── actions (Homebrew)
         ├── inspect: brew info node
         ├── update: brew upgrade node
@@ -67,7 +67,7 @@ whowns rustc cargo --explain
 たとえば環境から確認できる場合、次のような所有チェーンになります。
 
 ```text
-node → nvm [confirmed] → Homebrew [confirmed]
+node → nvm [probable] → Homebrew [probable]
 rustc → rustup [confirmed] → rustup installer [probable]
 ```
 
@@ -115,9 +115,11 @@ OwnershipGraph (command)
 
 ## 確信度
 
-- `confirmed`: package receipt、Nix store、Homebrew Cellar、既知のバージョン管理ディレクトリなど、強い所有証拠がある
-- `probable`: パス規約とツール構造から管理元をかなり絞れるが、receiptのような直接の所有記録ではない
+- `confirmed`: package databaseやreceiptが対象ファイルの所有を記録している、または管理ツール照会が解決済みの実体を返した
+- `probable`: 既知の管理パス配置、対象ファイルに直接結び付かない導入済みreceipt、OS標準パスから管理元をかなり絞れるが、直接の所有記録はない
 - `unknown`: 認識済みの管理元がなく、安全な更新・削除方法を決められない
+
+確信度は各所有候補の型付き `Evidence` から導出します。detectorは観測した事実だけを返し、`confirmed` を直接指定できません。`--explain` では、確定根拠となったreceipt、package query、実体と一致したmanager query、またはそれより弱いpath evidenceを確認できます。
 
 `/usr/local` にあるという理由だけで「手動インストール」とは断定しません。vendor installer、パッケージマネージャ、手動コピーのいずれもあり得るため、`unconfirmed owner` と未確認理由を返し、更新・削除コマンドは生成しません。
 
@@ -131,7 +133,7 @@ OwnershipGraph (command)
 - Linux の dpkg、RPM、pacman、apk
 - OS標準パス
 
-既知の管理ツールについては、`which` や `current` 相当の読み取り専用照会を実行し、その結果を `Evidence` に追加します。
+既知の管理ツールについては、`which` や `current` 相当の読み取り専用照会を実行し、その結果を `Evidence` に追加します。MacPorts prefix配下のパスには `port -q provides <path>` でローカルregistryを照会し、パスだけなら `probable`、registryが所有者を返した場合は `confirmed` とします。
 
 これらの照会は、生のsubprocess呼び出しではなく、単一の実行ポリシーを経由します。
 
