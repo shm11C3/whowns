@@ -1,0 +1,149 @@
+# whowns
+
+[Japanese](README.ja.md)
+
+`whowns` answers a deceptively simple question: "What installed and manages this command?"
+
+The name compresses `who owns` into six characters. The tool focuses on explaining one command at a time instead of treating package inventory as its primary purpose. It answers:
+
+- Which executable is active?
+- Are other versions shadowed later in `PATH`?
+- Which version manager or package manager owns the runtime?
+- How was that manager itself installed?
+- Which paths, symlinks, receipts, and manager queries support the conclusion?
+- Which manager and command should be used to inspect, update, or remove it?
+
+`whowns` is a standalone Rust binary. Users do not need Node.js, Python, or another runtime to run it.
+
+## Inspect a command
+
+```console
+$ whowns node
+node
+  active: /usr/local/bin/node
+    ownership: node -> macOS Installer (.pkg) [confirmed]
+    inspect: pkgutil --pkg-info org.nodejs.node.pkg
+    note: Update by installing a newer package from the same vendor. ...
+  shadowed: /opt/homebrew/bin/node
+    resolves to: /opt/homebrew/Cellar/node/25.6.1_1/bin/node
+    ownership: node -> Homebrew [confirmed]
+    inspect: brew info node
+    update: brew upgrade node
+    remove: brew uninstall node
+```
+
+`active` is the executable selected by `PATH`. `shadowed` executables are installed but lose because they appear later in `PATH`. Action guides are suggestions only; `whowns` never runs update or removal commands.
+
+Use `--explain` to show detailed evidence and every ownership layer.
+
+```sh
+whowns node --explain
+whowns rustc cargo --explain
+```
+
+When the environment provides enough evidence, an ownership chain can look like this:
+
+```text
+node -> nvm [confirmed] -> Homebrew [confirmed]
+rustc -> rustup [confirmed] -> rustup installer [probable]
+```
+
+## List common runtimes
+
+The summary is generated from the same `OwnershipGraph` used by individual inspection. There is no separate ownership detector for this view.
+
+```sh
+whowns --all
+whowns --all --explain
+whowns --all --show-missing
+```
+
+The summary shows the active executable's owner chain, confidence, and shadowed count. `--explain` appends the detailed view of the same graphs.
+
+## JSON
+
+Individual inspection and `--all` emit the same machine-readable model.
+
+```sh
+whowns node --json
+whowns --all --json
+```
+
+```text
+OwnershipGraph (command)
+└── Resolution[] (active / shadowed, path, real_path)
+    └── OwnershipNode[] (ordered nearest-first)
+        ├── kind
+        ├── package / version
+        ├── Confidence
+        ├── Evidence[]
+        └── ActionGuide
+```
+
+- `Resolution`: the active executable and every shadowed executable found in `PATH`
+- `OwnershipNode`: the ordered `runtime -> version manager -> installation source` relationship
+- `Evidence`: paths, symlinks, filesystem targets, receipts, package queries, and manager queries
+- `Confidence`: `confirmed`, `probable`, or `unknown`
+- `ActionGuide`: suggested inspect, update, and removal commands with safety notes
+
+## Confidence
+
+- `confirmed`: strong ownership evidence such as a package receipt, Nix store path, Homebrew Cellar path, or recognized version-manager layout
+- `probable`: the path and tool layout strongly suggest an owner, but no direct ownership record was found
+- `unknown`: no recognized owner was found, so a safe update or removal method cannot be selected
+
+A file under `/usr/local` is not automatically labeled as manually installed. Vendor installers, package managers, and manual copies can all use that location. Without stronger evidence, `whowns` reports `unconfirmed owner` and does not generate update or removal commands.
+
+## Recognized owners
+
+- Nix, Homebrew, and MacPorts
+- nvm, fnm, Volta, mise, and asdf
+- pyenv, rbenv, SDKMAN!, uv, rustup, and `cargo install`
+- Deno and Bun installer directories, and pnpm home
+- macOS Installer receipts through `pkgutil` and python.org framework installations
+- Linux packages owned by dpkg, RPM, pacman, or apk
+- operating-system paths
+
+For supported managers, `whowns` runs read-only queries such as `which` or `current` and records their results as `Evidence`.
+
+## Installation
+
+[GitHub Releases](https://github.com/shm11C3/whowns/releases) is the primary binary distribution channel. Download the archive for your OS and CPU, extract it, and run the bundled installer.
+
+```sh
+tar -xzf whowns-v0.1.0-aarch64-apple-darwin.tar.gz
+cd whowns-v0.1.0-aarch64-apple-darwin
+./install.sh
+```
+
+The default destination is `$HOME/.local/bin/whowns`.
+
+```sh
+./install.sh --bin-dir /usr/local/bin
+```
+
+See [docs/RELEASING.md](docs/RELEASING.md) for supported architectures, checksums, artifact attestations, and the release process.
+
+You can also install from source with Cargo.
+
+```sh
+cargo install --path . --locked
+
+whowns node
+```
+
+## Development
+
+```sh
+cargo test
+cargo build --release
+./target/release/whowns node
+```
+
+The project has no external Rust crate dependencies. Documentation and code comments use English; [README.ja.md](README.ja.md) is the Japanese localization.
+
+## Current boundaries
+
+`whowns` inspects executables found in `PATH` on macOS and Linux. It does not inventory every package registered with the operating system or package managers. Windows, tracing the source of shell configuration, and automatic uninstallation are currently out of scope.
+
+If the installation source of a version manager cannot be determined, the ownership chain ends with `unconfirmed source [unknown]`.

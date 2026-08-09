@@ -1,0 +1,13 @@
+[package]
+name = "whowns"
+version = "0.1.0"
+edition = "2024"
+description = "Explain which installer or version manager owns runtimes on PATH"
+license = "MIT"
+repository = "https://github.com/shm11C3/whowns"
+
+[[bin]]
+name = "whowns"
+path = "src/main.rs"
+
+[dependencies]
