@@ -1,0 +1,71 @@
+name: Tag release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+
+permissions: {}
+
+jobs:
+  tag:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      release-tag: ${{ steps.version.outputs.release-tag }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Determine release tag
+        id: version
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          cargo metadata --locked --no-deps --format-version 1 > /dev/null
+
+          previous_version=$(git show "${BEFORE_SHA}:Cargo.toml" | awk -F '"' '/^version = / { print $2; exit }')
+          current_version=$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)
+
+          if [[ "$previous_version" == "$current_version" ]]; then
+            echo "Cargo package version did not change"
+            exit 0
+          fi
+
+          echo "release-tag=v${current_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        if: steps.version.outputs.release-tag != ''
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.release-tag }}
+        run: |
+          if git show-ref --verify --quiet "refs/tags/${RELEASE_TAG}"; then
+            echo "tag ${RELEASE_TAG} already exists" >&2
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag --annotate "$RELEASE_TAG" --message "$RELEASE_TAG" "$GITHUB_SHA"
+          git push origin "$RELEASE_TAG"
+
+  release:
+    needs: tag
+    if: needs.tag.outputs.release-tag != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+    steps:
+      - name: Start release workflow
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.tag.outputs.release-tag }}
+        run: gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$RELEASE_TAG"
