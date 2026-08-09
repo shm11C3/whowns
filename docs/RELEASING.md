@@ -21,11 +21,16 @@ Each archive contains:
 - `README.ja.md`
 - `LICENSE`
 
+Each published release also contains these top-level assets:
+
+- `install.sh` for `curl | sh` installation
+- `SHA256SUMS` covering every archive and the installer
+
 ## Release procedure
 
 1. Update the version in `Cargo.toml`.
 2. Run `cargo check` to synchronize the package version in `Cargo.lock`.
-3. Run `cargo fmt --all -- --check`, `cargo test --locked --all-targets`, and `cargo clippy --locked --all-targets -- -D warnings`.
+3. Run `cargo fmt --all -- --check`, `cargo test --locked --all-targets`, `cargo clippy --locked --all-targets -- -D warnings`, and `sh tests/install.sh`.
 4. Commit the version change.
 5. Create and push an annotated tag that matches the Cargo package version.
 
@@ -62,18 +67,27 @@ gh attestation verify whowns-v0.1.0-aarch64-apple-darwin.tar.gz \
 
 ## Installation
 
-Extract the archive and run the bundled installer.
+Install the latest release directly. The installer selects the target archive and verifies its SHA-256 checksum before writing the binary.
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/shm11C3/whowns/releases/latest/download/install.sh | sh
+```
+
+The default destination is `$HOME/.local/bin/whowns`. The `wio` shorthand alias is installed by default; pass `--no-alias` to omit it.
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/shm11C3/whowns/releases/latest/download/install.sh \
+  | sh -s -- --bin-dir /usr/local/bin --no-alias
+```
+
+Alternatively, extract the archive and run its bundled installer.
 
 ```sh
 tar -xzf whowns-v0.1.0-aarch64-apple-darwin.tar.gz
 cd whowns-v0.1.0-aarch64-apple-darwin
 ./install.sh
-```
-
-The default destination is `$HOME/.local/bin/whowns`.
-
-```sh
-./install.sh --bin-dir /usr/local/bin
 ```
 
 ## Repository settings before publication

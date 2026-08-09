@@ -34,3 +34,6 @@ jobs:
 
       - name: Run tests
         run: cargo test --locked --all-targets
+
+      - name: Test installer
+        run: sh tests/install.sh
