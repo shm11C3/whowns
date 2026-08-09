@@ -201,7 +201,8 @@ fn source_from_root(
         };
     };
     let real_root = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
-    let source = detect_owner(command, &root, &real_root, runner);
+    let mut source = detect::detect(command, &root, &real_root, runner);
+    detect::enrich_with_manager_query_in_root(&mut source, command, &real_root, runner);
     UpstreamOwner {
         node: source,
         path: Some(root),

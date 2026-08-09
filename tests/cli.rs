@@ -122,12 +122,16 @@ fn resolves_more_than_two_ownership_nodes_in_nearest_first_order() {
     symlink(&managed_nvm, sandbox.path(".nvm")).unwrap();
     let selected_bin = sandbox.path(".nvm/versions/node/v22.3.0/bin");
 
-    let real_managed_nvm = fs::canonicalize(&managed_nvm).unwrap();
+    let managed_nvm_executable = sandbox.executable(
+        ".local/share/mise/installs/nvm/0.40.3/bin/nvm",
+        "#!/bin/sh\nexit 0\n",
+    );
+    let real_managed_nvm_executable = fs::canonicalize(&managed_nvm_executable).unwrap();
     let homebrew_mise = sandbox.executable(
         "homebrew/Cellar/mise/2026.8.0/bin/mise",
         &format!(
             "#!/bin/sh\nif [ \"$1\" = \"which\" ] && [ \"$2\" = \"nvm\" ]; then\n  printf '%s\\n' '{}'\nfi\n",
-            real_managed_nvm.display()
+            real_managed_nvm_executable.display()
         ),
     );
     let tools = sandbox.path("tools");
@@ -145,7 +149,7 @@ fn resolves_more_than_two_ownership_nodes_in_nearest_first_order() {
     );
     assert!(
         stdout.contains("`mise which nvm` returned")
-            && stdout.contains("and it matches the resolved executable"),
+            && stdout.contains("and it is inside the resolved manager root"),
         "output: {stdout}"
     );
     assert!(stderr(&output).is_empty());
