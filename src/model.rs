@@ -21,6 +21,8 @@ impl Confidence {
 pub enum OwnerKind {
     PackageManager,
     VersionManager,
+    // Installer receipts are currently detected only on macOS.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Installer,
     ToolInstaller,
     OperatingSystem,
