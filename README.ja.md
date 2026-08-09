@@ -32,19 +32,23 @@ Rust の単体バイナリなので、利用者側に Node.js やPythonなどの
 ```console
 $ whowns node
 node
-  active: /usr/local/bin/node
-    ownership: node -> macOS Installer (.pkg) [confirmed]
-    inspect: pkgutil --pkg-info org.nodejs.node.pkg
-    note: Update by installing a newer package from the same vendor. ...
-  shadowed: /opt/homebrew/bin/node
-    resolves to: /opt/homebrew/Cellar/node/25.6.1_1/bin/node
-    ownership: node -> Homebrew [confirmed]
-    inspect: brew info node
-    update: brew upgrade node
-    remove: brew uninstall node
+├── ● active
+│   ├── executable: /usr/local/bin/node
+│   ├── ownership: node → macOS Installer (.pkg) [confirmed]
+│   └── actions (macOS Installer (.pkg))
+│       ├── inspect: pkgutil --pkg-info org.nodejs.node.pkg
+│       └── note: Update by installing a newer package from the same vendor. ...
+└── ○ shadowed
+    ├── executable: /opt/homebrew/bin/node
+    ├── resolves to: /opt/homebrew/Cellar/node/25.6.1_1/bin/node
+    ├── ownership: node → Homebrew [confirmed]
+    └── actions (Homebrew)
+        ├── inspect: brew info node
+        ├── update: brew upgrade node
+        └── remove: brew uninstall node
 ```
 
-`active` は現在実行されるもの、`shadowed` はインストール済みだが PATH の優先順位で隠れているものです。更新・削除コマンドは案内するだけで、自動実行しません。
+terminal treeによって、実体、所有関係、操作案内のつながりを視覚的に追えます。`active` は現在実行されるもの、`shadowed` はインストール済みだが PATH の優先順位で隠れているものです。更新・削除コマンドは案内するだけで、自動実行しません。
 
 詳細な検出根拠と多段所有関係は `--explain` で表示します。
 
@@ -56,8 +60,8 @@ whowns rustc cargo --explain
 たとえば環境から確認できる場合、次のような所有チェーンになります。
 
 ```text
-node -> nvm [confirmed] -> Homebrew [confirmed]
-rustc -> rustup [confirmed] -> rustup installer [probable]
+node → nvm [confirmed] → Homebrew [confirmed]
+rustc → rustup [confirmed] → rustup installer [probable]
 ```
 
 ## 一覧表示
