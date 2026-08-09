@@ -31,19 +31,23 @@ The name compresses `who owns` into six characters. The tool focuses on explaini
 ```console
 $ whowns node
 node
-  active: /usr/local/bin/node
-    ownership: node -> macOS Installer (.pkg) [confirmed]
-    inspect: pkgutil --pkg-info org.nodejs.node.pkg
-    note: Update by installing a newer package from the same vendor. ...
-  shadowed: /opt/homebrew/bin/node
-    resolves to: /opt/homebrew/Cellar/node/25.6.1_1/bin/node
-    ownership: node -> Homebrew [confirmed]
-    inspect: brew info node
-    update: brew upgrade node
-    remove: brew uninstall node
+├── ● active
+│   ├── executable: /usr/local/bin/node
+│   ├── ownership: node → macOS Installer (.pkg) [confirmed]
+│   └── actions (macOS Installer (.pkg))
+│       ├── inspect: pkgutil --pkg-info org.nodejs.node.pkg
+│       └── note: Update by installing a newer package from the same vendor. ...
+└── ○ shadowed
+    ├── executable: /opt/homebrew/bin/node
+    ├── resolves to: /opt/homebrew/Cellar/node/25.6.1_1/bin/node
+    ├── ownership: node → Homebrew [confirmed]
+    └── actions (Homebrew)
+        ├── inspect: brew info node
+        ├── update: brew upgrade node
+        └── remove: brew uninstall node
 ```
 
-`active` is the executable selected by `PATH`. `shadowed` executables are installed but lose because they appear later in `PATH`. Action guides are suggestions only; `whowns` never runs update or removal commands.
+The terminal tree keeps resolutions, ownership, and suggested actions visually connected. `active` is the executable selected by `PATH`. `shadowed` executables are installed but lose because they appear later in `PATH`. Action guides are suggestions only; `whowns` never runs update or removal commands.
 
 Use `--explain` to show detailed evidence and every ownership layer.
 
@@ -55,8 +59,8 @@ whowns rustc cargo --explain
 When the environment provides enough evidence, an ownership chain can look like this:
 
 ```text
-node -> nvm [confirmed] -> Homebrew [confirmed]
-rustc -> rustup [confirmed] -> rustup installer [probable]
+node → nvm [confirmed] → Homebrew [confirmed]
+rustc → rustup [confirmed] → rustup installer [probable]
 ```
 
 ## List common runtimes

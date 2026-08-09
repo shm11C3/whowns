@@ -81,8 +81,10 @@ fn reports_active_and_shadowed_executables_in_path_order() {
     let stdout = stdout(&output);
 
     assert!(output.status.success());
-    assert!(stdout.contains(&format!("active: {}/fixture-tool", first.display())));
-    assert!(stdout.contains(&format!("shadowed: {}/fixture-tool", second.display())));
+    assert!(stdout.contains("├── ● active"));
+    assert!(stdout.contains(&format!("executable: {}/fixture-tool", first.display())));
+    assert!(stdout.contains("└── ○ shadowed"));
+    assert!(stdout.contains(&format!("executable: {}/fixture-tool", second.display())));
     assert!(stderr(&output).is_empty());
 }
 
@@ -101,9 +103,10 @@ fn explains_a_runtime_manager_and_the_managers_installation_source() {
     let stdout = stdout(&output);
 
     assert!(output.status.success());
-    assert!(stdout.contains("ownership: node -> nvm [confirmed] -> mise [confirmed]"));
-    assert!(stdout.contains("owner[1]: nvm (version_manager, confirmed)"));
-    assert!(stdout.contains("owner[2]: mise (version_manager, confirmed)"));
+    assert!(stdout.contains("ownership: node → nvm [confirmed] → mise [confirmed]"));
+    assert!(stdout.contains("├── nvm [confirmed]"));
+    assert!(stdout.contains("└── mise [confirmed]"));
+    assert!(stdout.contains("kind: version_manager"));
 }
 
 #[test]
@@ -225,8 +228,9 @@ fn assert_linux_package_query(
 
     assert!(output.status.success());
     assert!(stdout.contains(expected_owner), "output: {stdout}");
+    assert!(stdout.contains("kind: package_manager"), "output: {stdout}");
     assert!(stdout.contains(expected_guide), "output: {stdout}");
-    assert!(stdout.contains("evidence[package query]"));
+    assert!(stdout.contains("package query:"));
 }
 
 #[cfg(target_os = "linux")]
@@ -235,7 +239,7 @@ fn reads_dpkg_package_ownership() {
     assert_linux_package_query(
         "dpkg-query",
         "fixture-package: /fixture-tool",
-        "dpkg (package_manager, confirmed)",
+        "dpkg [confirmed]",
         "apt install --only-upgrade fixture-package",
     );
 }
@@ -246,7 +250,7 @@ fn reads_rpm_package_ownership() {
     assert_linux_package_query(
         "rpm",
         "fixture-package-1.2.3-1.x86_64",
-        "RPM (package_manager, confirmed)",
+        "RPM [confirmed]",
         "Use the system's RPM frontend",
     );
 }
@@ -257,7 +261,7 @@ fn reads_pacman_package_ownership() {
     assert_linux_package_query(
         "pacman",
         "/fixture-tool is owned by fixture-package 1.2.3-1",
-        "pacman (package_manager, confirmed)",
+        "pacman [confirmed]",
         "inspect: pacman -Qo",
     );
 }
@@ -268,7 +272,7 @@ fn reads_apk_package_ownership() {
     assert_linux_package_query(
         "apk",
         "/fixture-tool is owned by fixture-package-1.2.3-r0",
-        "apk (package_manager, confirmed)",
+        "apk [confirmed]",
         "inspect: apk info -W",
     );
 }
