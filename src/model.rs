@@ -32,6 +32,7 @@ pub enum EvidenceKind {
     Unconfirmed,
     ManagerLocation,
     ManagerLookup,
+    OwnershipTraversal,
 }
 
 impl EvidenceKind {
@@ -50,6 +51,7 @@ impl EvidenceKind {
             Self::Unconfirmed => "unconfirmed",
             Self::ManagerLocation => "manager location",
             Self::ManagerLookup => "manager lookup",
+            Self::OwnershipTraversal => "ownership traversal",
         }
     }
 
@@ -69,7 +71,8 @@ impl EvidenceKind {
             | Self::ManagerQuery
             | Self::Unconfirmed
             | Self::ManagerLocation
-            | Self::ManagerLookup => Confidence::Unknown,
+            | Self::ManagerLookup
+            | Self::OwnershipTraversal => Confidence::Unknown,
         }
     }
 }

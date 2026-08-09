@@ -355,8 +355,39 @@ pub fn enrich_with_manager_query(
     expected_path: &Path,
     runner: &CommandRunner,
 ) {
+    enrich_with_manager_query_matching(
+        owner,
+        command,
+        expected_path,
+        QueryExpectation::Exact(expected_path),
+        runner,
+    );
+}
+
+pub fn enrich_with_manager_query_in_root(
+    owner: &mut OwnershipNode,
+    command: &str,
+    root: &Path,
+    runner: &CommandRunner,
+) {
+    enrich_with_manager_query_matching(
+        owner,
+        command,
+        root,
+        QueryExpectation::InsideRoot(root),
+        runner,
+    );
+}
+
+fn enrich_with_manager_query_matching(
+    owner: &mut OwnershipNode,
+    command: &str,
+    action_path: &Path,
+    expectation: QueryExpectation<'_>,
+    runner: &CommandRunner,
+) {
     let id = owner.id;
-    let Some(query) = manager_query(runner, id, command, expected_path) else {
+    let Some(query) = manager_query(runner, id, command, expectation) else {
         return;
     };
     owner.evidence.push(query.evidence);
@@ -380,8 +411,27 @@ pub fn enrich_with_manager_query(
         command,
         owner.package.as_deref(),
         owner.version.as_deref(),
-        expected_path,
+        action_path,
     );
+}
+
+#[derive(Clone, Copy)]
+enum QueryExpectation<'a> {
+    Exact(&'a Path),
+    InsideRoot(&'a Path),
+}
+
+impl QueryExpectation<'_> {
+    fn matched_relation(self, result: &Path) -> Option<&'static str> {
+        match self {
+            Self::Exact(expected) => (result == expected
+                || fs::canonicalize(result).is_ok_and(|path| path == expected))
+            .then_some(" and it matches the resolved executable"),
+            Self::InsideRoot(root) => fs::canonicalize(result)
+                .is_ok_and(|path| path.starts_with(root))
+                .then_some(" and it is inside the resolved manager root"),
+        }
+    }
 }
 
 struct ManagerQuery {
@@ -413,7 +463,7 @@ fn manager_query(
     runner: &CommandRunner,
     id: OwnerId,
     command: &str,
-    expected_path: &Path,
+    expectation: QueryExpectation<'_>,
 ) -> Option<ManagerQuery> {
     let query = id.query(command)?;
     let program = resolve_program(query.program)?;
@@ -447,22 +497,19 @@ fn manager_query(
                 return None;
             }
             let result_path = Path::new(&result);
-            let matches_expected_path = result_path == expected_path
-                || fs::canonicalize(result_path).is_ok_and(|path| path == expected_path);
-            let relation = if matches_expected_path {
-                " and it matches the resolved executable"
-            } else {
-                ""
-            };
+            let relation = expectation.matched_relation(result_path);
             Some(ManagerQuery {
                 result: Some(result.clone()),
                 evidence: Evidence::new(
-                    if matches_expected_path {
+                    if relation.is_some() {
                         EvidenceKind::ManagerQueryMatch
                     } else {
                         EvidenceKind::ManagerQuery
                     },
-                    format!("`{invocation}` returned `{result}`{relation}"),
+                    format!(
+                        "`{invocation}` returned `{result}`{}",
+                        relation.unwrap_or_default()
+                    ),
                 ),
             })
         }
@@ -502,6 +549,22 @@ pub(crate) fn unconfirmed_manager_source(manager: OwnerId, path: Option<&Path>) 
             note: Some(format!(
                 "Do not remove {manager} until its installer or package-manager record is identified."
             )),
+            ..ActionGuide::default()
+        },
+    )
+}
+
+pub(crate) fn unconfirmed_chain_termination(detail: impl Into<String>) -> OwnershipNode {
+    owner(
+        OwnerId::UnconfirmedSource,
+        None,
+        None,
+        vec![Evidence::new(EvidenceKind::OwnershipTraversal, detail)],
+        ActionGuide {
+            note: Some(
+                "Ownership traversal stopped safely. Verify the remaining installation source manually."
+                    .into(),
+            ),
             ..ActionGuide::default()
         },
     )

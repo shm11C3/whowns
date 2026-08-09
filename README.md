@@ -70,9 +70,11 @@ node → nvm [probable] → Homebrew [probable]
 rustc → rustup [confirmed] → rustup installer [probable]
 ```
 
+Resolution continues upstream until an installation source is reached. Cycles and chains longer than eight owners stop with an `unconfirmed source` node whose evidence explains why traversal ended.
+
 ## List common runtimes
 
-The summary is generated from the same `OwnershipGraph` used by individual inspection. There is no separate ownership detector for this view.
+The summary is generated from the same `OwnershipGraph` used by individual inspection. The graph is the command-level model: it can contain multiple PATH resolutions, while each resolution contains one linear, nearest-first ownership chain. There is no separate ownership detector for this view.
 
 ```sh
 whowns --all
@@ -92,7 +94,7 @@ whowns --all --json
 ```
 
 ```text
-OwnershipGraph (command)
+OwnershipGraph (command and its PATH resolutions)
 └── Resolution[] (active / shadowed, path, real_path)
     └── OwnershipNode[] (ordered nearest-first)
         ├── id (stable) / name (display)
@@ -104,7 +106,7 @@ OwnershipGraph (command)
 ```
 
 - `Resolution`: the active executable and every shadowed executable found in `PATH`
-- `OwnershipNode`: the ordered `runtime -> version manager -> installation source` relationship
+- `OwnershipNode`: one member of an ordered, nearest-first `runtime -> manager -> upstream manager -> installation source` chain
 - `id`: the stable machine-readable owner identity, such as `homebrew`, `sdkman`, or `macos_installer`; `name` is display text and can change without affecting `id`
 - `Evidence`: paths, symlinks, filesystem targets, receipts, package queries, and manager queries
 - `Confidence`: `confirmed`, `probable`, or `unknown`
