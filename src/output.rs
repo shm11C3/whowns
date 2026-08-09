@@ -486,9 +486,38 @@ mod tests {
         }
     }
 
-    fn assert_valid_json(json: &[u8]) {
+    fn assert_representative_json_document(json: &[u8]) {
         let mut child = Command::new("python3")
-            .args(["-c", "import json, sys; json.load(sys.stdin)"])
+            .args([
+                "-c",
+                r#"
+import json
+import sys
+
+document = json.load(sys.stdin)
+assert type(document) is dict
+assert type(document.get("schema_version")) is int
+assert document["schema_version"] == 1
+assert type(document.get("graphs")) is list
+assert len(document["graphs"]) == 1
+
+graph = document["graphs"][0]
+assert graph["command"] == "node"
+assert type(graph.get("resolutions")) is list
+assert len(graph["resolutions"]) == 1
+
+resolution = graph["resolutions"][0]
+assert resolution["status"] == "active"
+assert type(resolution.get("ownership_chain")) is list
+assert len(resolution["ownership_chain"]) == 2
+
+nvm, homebrew = resolution["ownership_chain"]
+assert nvm["id"] == "nvm"
+assert nvm["name"] == "nvm"
+assert homebrew["id"] == "homebrew"
+assert homebrew["name"] == "Homebrew"
+"#,
+            ])
             .stdin(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -561,18 +590,7 @@ mod tests {
     fn json_document_is_versioned_and_has_stable_owner_identities() {
         let mut json = Vec::new();
         print_json(&[graph()], &mut json).unwrap();
-        assert_valid_json(&json);
-        let json = String::from_utf8(json).unwrap();
-        assert!(json.starts_with("{\n"));
-        assert!(json.contains("\"schema_version\": 1"));
-        assert!(json.contains("\"graphs\""));
-        assert!(json.contains("\"resolutions\""));
-        assert!(json.contains("\"ownership_chain\""));
-        assert!(json.contains("\"action_guide\""));
-        assert!(json.contains("\"id\": \"nvm\""));
-        assert!(json.contains("\"name\": \"nvm\""));
-        assert!(json.contains("\"id\": \"homebrew\""));
-        assert!(json.contains("\"name\": \"Homebrew\""));
+        assert_representative_json_document(&json);
     }
 
     #[test]

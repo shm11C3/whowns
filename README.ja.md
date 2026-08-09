@@ -191,6 +191,8 @@ JSON document
 
 ## 開発用ビルド
 
+全テストの実行にはPython 3が必要です。公開JSON contractの検証に標準libraryのJSON parserを使用しますが、`whowns` binary自体はPythonに依存しません。
+
 ```sh
 cargo test
 cargo build --release

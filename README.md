@@ -188,6 +188,8 @@ These queries run through a single bounded execution policy, not raw, unbounded 
 
 ## Development
 
+Running the full test suite requires Python 3. The tests use its standard-library JSON parser to validate the public JSON contract; the `whowns` binary itself does not depend on Python.
+
 ```sh
 cargo test
 cargo build --release

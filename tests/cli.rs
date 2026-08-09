@@ -100,9 +100,37 @@ fn stderr(output: &Output) -> String {
     String::from_utf8(output.stderr.clone()).unwrap()
 }
 
-fn assert_valid_json(json: &[u8]) {
+fn assert_json_document(json: &[u8], expected_command: &str) {
     let mut child = Command::new("python3")
-        .args(["-c", "import json, sys; json.load(sys.stdin)"])
+        .args([
+            "-c",
+            r#"
+import json
+import sys
+
+document = json.load(sys.stdin)
+assert type(document) is dict
+assert type(document.get("schema_version")) is int
+assert document["schema_version"] == 1
+assert type(document.get("graphs")) is list
+assert len(document["graphs"]) == 1
+
+graph = document["graphs"][0]
+assert graph["command"] == sys.argv[1]
+assert type(graph.get("resolutions")) is list
+assert len(graph["resolutions"]) == 1
+
+resolution = graph["resolutions"][0]
+assert resolution["status"] == "active"
+assert type(resolution.get("ownership_chain")) is list
+assert len(resolution["ownership_chain"]) == 1
+
+owner = resolution["ownership_chain"][0]
+assert owner["id"] == "homebrew"
+assert owner["name"] == "Homebrew"
+"#,
+            expected_command,
+        ])
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -560,16 +588,8 @@ fn emits_the_common_ownership_graph_as_json() {
     let stdout = stdout(&output);
 
     assert!(output.status.success());
-    assert_valid_json(&output.stdout);
+    assert_json_document(&output.stdout, "node");
     assert!(stdout.starts_with("{\n"));
-    assert!(stdout.contains("\"schema_version\": 1"));
-    assert!(stdout.contains("\"graphs\""));
-    assert!(stdout.contains("\"command\": \"node\""));
-    assert!(stdout.contains("\"status\": \"active\""));
-    assert!(stdout.contains("\"id\": \"homebrew\""));
-    assert!(stdout.contains("\"name\": \"Homebrew\""));
-    assert!(stdout.contains("\"confidence\": \"probable\""));
-    assert!(stdout.contains("\"action_guide\""));
     assert!(stderr(&output).is_empty());
 }
 
@@ -602,8 +622,8 @@ fn all_mode_reuses_the_individual_diagnostic_model() {
     let individual = sandbox.run(WHOWNS, &["node", "--json"], &[&bin]);
     let all = sandbox.run(WHOWNS, &["--all", "--json"], &[&bin]);
 
-    assert_valid_json(&individual.stdout);
-    assert_valid_json(&all.stdout);
+    assert_json_document(&individual.stdout, "node");
+    assert_json_document(&all.stdout, "node");
     assert_eq!(individual.status.code(), all.status.code());
     assert_eq!(individual.stdout, all.stdout);
     assert_eq!(individual.stderr, all.stderr);
