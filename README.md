@@ -54,6 +54,8 @@ node
 
 The terminal tree keeps resolutions, ownership, and suggested actions visually connected. `active` is the executable selected by `PATH`. `shadowed` executables are installed but lose because they appear later in `PATH`. Action guides are suggestions only; `whowns` never runs update or removal commands.
 
+`whowns` does execute other programs for inspection: recognized package and version managers (`mise which`, `pyenv which`, `pkgutil --file-info`, and similar) are invoked with read-only subcommands to confirm ownership. See [Recognized owners](#recognized-owners) for the safety policy around those queries.
+
 Use `--explain` to show detailed evidence and every ownership layer.
 
 ```sh
@@ -127,6 +129,15 @@ A file under `/usr/local` is not automatically labeled as manually installed. Ve
 - operating-system paths
 
 For supported managers, `whowns` runs read-only queries such as `which` or `current` and records their results as `Evidence`.
+
+These queries run through a single bounded execution policy, not raw, unbounded subprocess calls:
+
+- Each query targets the executable `whowns` already resolved on `PATH`, not a bare command name handed to a fresh `PATH` search. This keeps the query pointed at the same binary `whowns` inspected, even if `PATH` changes between the two lookups.
+- Each query is killed if it does not finish within a few seconds, so a hung or slow manager cannot block a lookup or `--all`.
+- Identical queries are only ever executed once per `whowns` invocation; repeated queries across runtimes or resolutions in `--all` reuse the cached result.
+- Captured output is bounded; a manager that misbehaves and writes excessive output cannot exhaust memory.
+- A timed-out or unstartable query is always printed as a `note:` line on stderr. A manager query — the confirmatory `which`/`current` query run after an owner is already identified — additionally records its outcome, including a non-zero exit, as `Evidence` on that owner, so a degraded confirmatory query stays visible instead of silently changing the result.
+- Queries inherit the parent process environment unmodified. Managers resolve their own data directories from variables such as `HOME`; clearing or fabricating environment state for them would make their answers wrong rather than safer.
 
 ## Installation
 

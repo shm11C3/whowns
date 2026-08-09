@@ -1,5 +1,6 @@
 mod cli;
 mod detect;
+mod exec;
 mod graph;
 mod model;
 mod output;

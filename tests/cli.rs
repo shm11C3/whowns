@@ -6,6 +6,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 const WHOWNS: &str = env!("CARGO_BIN_EXE_whowns");
 
@@ -181,6 +182,191 @@ fn all_mode_reuses_the_individual_diagnostic_model() {
     assert_eq!(individual.stderr, all.stderr);
 }
 
+#[test]
+fn confirms_a_mise_managed_runtime_via_its_which_query() {
+    let sandbox = Sandbox::new("mise-which-query");
+    let node = sandbox.executable(
+        ".local/share/mise/installs/node/22.3.0/bin/node",
+        "#!/bin/sh\nexit 0\n",
+    );
+    let node_bin = node.parent().unwrap().to_path_buf();
+    // whowns compares the query result against the runtime's canonicalized
+    // real path, so the fixture must answer with that same canonical form.
+    let real_node = fs::canonicalize(&node).unwrap();
+    let tools = sandbox.path("tools");
+    sandbox.executable(
+        "tools/mise",
+        &format!(
+            "#!/bin/sh\nif [ \"$1\" = \"which\" ]; then\n  printf '%s\\n' '{}'\nfi\n",
+            real_node.display()
+        ),
+    );
+
+    let output = sandbox.run(WHOWNS, &["node", "--explain"], &[&node_bin, &tools]);
+    let stdout = stdout(&output);
+
+    assert!(output.status.success());
+    assert!(
+        stdout.contains("mise which node` returned"),
+        "output: {stdout}"
+    );
+    assert!(
+        stdout.contains("and it matches the resolved executable"),
+        "output: {stdout}"
+    );
+    assert!(stderr(&output).is_empty());
+}
+
+#[test]
+fn rejects_truncated_manager_query_output_instead_of_using_a_partial_value() {
+    // A manager that misbehaves and floods stdout must not have that
+    // truncated 64-KiB prefix treated as a real path/version and enriched
+    // into ownership evidence or generated action commands.
+    let sandbox = Sandbox::new("truncated-manager-query");
+    let node = sandbox.executable(
+        ".local/share/mise/installs/node/22.3.0/bin/node",
+        "#!/bin/sh\nexit 0\n",
+    );
+    let node_bin = node.parent().unwrap().to_path_buf();
+    let tools = sandbox.path("tools");
+    sandbox.executable(
+        "tools/mise",
+        "#!/bin/sh\nif [ \"$1\" = \"which\" ]; then\n  /usr/bin/yes | /usr/bin/head -c 200000\nfi\n",
+    );
+
+    let output = sandbox.run(WHOWNS, &["node", "--explain"], &[&node_bin, &tools]);
+    let stdout = stdout(&output);
+
+    assert!(output.status.success());
+    assert!(
+        stdout.contains("mise which node` output was truncated; ignoring it"),
+        "output: {stdout}"
+    );
+    assert!(
+        !stdout.contains("returned `"),
+        "a truncated result must not be reported as a returned value, output: {stdout}"
+    );
+}
+
+#[test]
+fn skips_the_manager_query_silently_when_mise_itself_is_not_on_path() {
+    // The sandbox PATH deliberately has no `mise` executable anywhere on it,
+    // regardless of what happens to be installed on the host running this
+    // test. resolve_program("mise") must fail before any subprocess is
+    // attempted, and enrich_with_manager_query must not add evidence or fail
+    // for that.
+    let sandbox = Sandbox::new("mise-not-on-path");
+    let node = sandbox.executable(
+        ".local/share/mise/installs/node/22.3.0/bin/node",
+        "#!/bin/sh\nexit 0\n",
+    );
+    let node_bin = node.parent().unwrap().to_path_buf();
+
+    let output = sandbox.run(WHOWNS, &["node", "--explain"], &[&node_bin]);
+    let stdout = stdout(&output);
+
+    assert!(output.status.success());
+    assert!(stdout.contains("mise [confirmed]"), "output: {stdout}");
+    assert!(
+        !stdout.contains("manager query"),
+        "no manager query should have been attempted, output: {stdout}"
+    );
+    assert!(stderr(&output).is_empty());
+}
+
+#[test]
+fn a_hung_manager_query_is_killed_and_reported_instead_of_blocking() {
+    let sandbox = Sandbox::new("hung-manager-query");
+    let node = sandbox.executable(
+        ".local/share/mise/installs/node/22.3.0/bin/node",
+        "#!/bin/sh\nexit 0\n",
+    );
+    let node_bin = node.parent().unwrap().to_path_buf();
+    let tools = sandbox.path("tools");
+    // Simulates a manager that hangs instead of answering; the runner must
+    // kill it after its timeout rather than block whowns indefinitely. The
+    // sandbox PATH only contains fixture directories, so `sleep` is called
+    // by its absolute path rather than relying on PATH to find it.
+    sandbox.executable("tools/mise", "#!/bin/sh\n/bin/sleep 30\n");
+
+    let started = Instant::now();
+    let output = sandbox.run(WHOWNS, &["node", "--explain"], &[&node_bin, &tools]);
+    let stdout = stdout(&output);
+    let stderr = stderr(&output);
+
+    // Bounds this against actually blocking on the 30-second sleep, not just
+    // against the process eventually returning: a regression that dropped
+    // the timeout back to an unconditional wait would still exit 0
+    // eventually, just 30 seconds later.
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "a hung manager query should not block whowns for anywhere near its 30-second sleep, elapsed: {:?}",
+        started.elapsed()
+    );
+    assert!(output.status.success());
+    assert!(
+        stdout.contains("`mise which node` did not finish within the timeout and was killed"),
+        "output: {stdout}"
+    );
+    assert!(
+        stderr.contains("mise which node")
+            && stderr.contains("did not finish within the timeout and was killed"),
+        "stderr: {stderr}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn caches_identical_manager_queries_across_runtimes_in_all_mode() {
+    let sandbox = Sandbox::new("query-cache");
+    let node = sandbox.executable(
+        ".local/share/mise/installs/node/22.3.0/bin/node",
+        "#!/bin/sh\nexit 0\n",
+    );
+    let node_bin = node.parent().unwrap().to_path_buf();
+    let python = sandbox.executable(
+        ".local/share/mise/installs/python/3.12.4/bin/python3",
+        "#!/bin/sh\nexit 0\n",
+    );
+    let python_bin = python.parent().unwrap().to_path_buf();
+    // Neither runtime nor mise itself resolves via `which`, so the only
+    // subprocess in play is the upstream `pkgutil --file-info <mise>` lookup
+    // that both node's and python3's upstream-owner resolution need.
+    let manager = sandbox.executable("manager/mise", "#!/bin/sh\nexit 1\n");
+    let manager_bin = manager.parent().unwrap().to_path_buf();
+    let tools = sandbox.path("tools");
+    let log = sandbox.path("pkgutil-calls.log");
+    sandbox.executable(
+        "tools/pkgutil",
+        &format!(
+            "#!/bin/sh\necho called >> '{}'\nif [ \"$1\" = \"--file-info\" ]; then\n  printf '%s\\n' 'pkgid: com.example.mise' 'pkg-version: 1.0.0'\n  exit 0\nfi\nexit 1\n",
+            log.display()
+        ),
+    );
+
+    let output = sandbox.run(
+        WHOWNS,
+        &["--all", "--explain"],
+        &[&node_bin, &python_bin, &manager_bin, &tools],
+    );
+    let stdout = stdout(&output);
+
+    assert!(output.status.success());
+    assert_eq!(
+        stdout
+            .matches("└── macOS Installer (.pkg) [confirmed]")
+            .count(),
+        2,
+        "expected one macOS Installer owner per runtime, output: {stdout}"
+    );
+    let calls = fs::read_to_string(&log).unwrap_or_default();
+    assert_eq!(
+        calls.lines().count(),
+        1,
+        "pkgutil should be queried once and cached across runtimes; log: {calls}"
+    );
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn reads_a_macos_installer_receipt_through_pkgutil() {
@@ -276,4 +462,27 @@ fn reads_apk_package_ownership() {
         "apk [confirmed]",
         "inspect: apk info -W",
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn continues_to_the_next_package_tool_when_one_reports_success_with_empty_output() {
+    // dpkg-query exits 0 (as it would with no output at all) without
+    // printing anything; that must not abort the whole detector before rpm
+    // gets a chance to answer.
+    let sandbox = Sandbox::new("empty-then-rpm");
+    let bin = sandbox.path("bin");
+    let tools = sandbox.path("tools");
+    sandbox.executable("bin/fixture-tool", "#!/bin/sh\nexit 0\n");
+    sandbox.executable("tools/dpkg-query", "#!/bin/sh\nexit 0\n");
+    sandbox.executable(
+        "tools/rpm",
+        "#!/bin/sh\nprintf '%s\\n' 'fixture-package-1.2.3-1.x86_64'\n",
+    );
+
+    let output = sandbox.run(WHOWNS, &["fixture-tool", "--explain"], &[&bin, &tools]);
+    let stdout = stdout(&output);
+
+    assert!(output.status.success());
+    assert!(stdout.contains("RPM [confirmed]"), "output: {stdout}");
 }
