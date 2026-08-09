@@ -88,6 +88,7 @@ whowns --all --json
 OwnershipGraph (command)
 └── Resolution[] (active / shadowed, path, real_path)
     └── OwnershipNode[] (ordered nearest-first)
+        ├── id (stable) / name (display)
         ├── kind
         ├── package / version
         ├── Confidence
@@ -97,6 +98,7 @@ OwnershipGraph (command)
 
 - `Resolution`: the active executable and every shadowed executable found in `PATH`
 - `OwnershipNode`: the ordered `runtime -> version manager -> installation source` relationship
+- `id`: the stable machine-readable owner identity, such as `homebrew`, `sdkman`, or `macos_installer`; `name` is display text and can change without affecting `id`
 - `Evidence`: paths, symlinks, filesystem targets, receipts, package queries, and manager queries
 - `Confidence`: `confirmed`, `probable`, or `unknown`
 - `ActionGuide`: suggested inspect, update, and removal commands with safety notes

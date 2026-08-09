@@ -1,37 +1,9 @@
 use std::path::Path;
 
-use crate::model::{ActionGuide, OwnerKind};
+use crate::model::{ActionGuide, OwnerId};
 
-/// Internal typed identity; user-facing output remains the stable string from `name`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum OwnerId {
-    Nix,
-    Homebrew,
-    Nvm,
-    Fnm,
-    Volta,
-    Mise,
-    Asdf,
-    Pyenv,
-    Rbenv,
-    Sdkman,
-    Uv,
-    Rustup,
-    RustupInstaller,
-    CargoInstall,
-    PnpmHome,
-    DenoInstaller,
-    BunInstaller,
-    MacosInstaller,
-    PythonOrgInstaller,
-    MacPorts,
-    Dpkg,
-    Rpm,
-    Pacman,
-    Apk,
-    OperatingSystem,
-    UnconfirmedOwner,
-}
+// Identity, display text, and OwnerKind live in `model`; this module holds only
+// the detection rules and action guides keyed by that identity.
 
 pub(super) struct QuerySpec<'a> {
     pub program: &'static str,
@@ -53,99 +25,6 @@ pub(super) const PATH_MANAGER_RULES: &[(&str, OwnerId)] = &[
 ];
 
 impl OwnerId {
-    pub(crate) const fn name(self) -> &'static str {
-        match self {
-            Self::Nix => "Nix",
-            Self::Homebrew => "Homebrew",
-            Self::Nvm => "nvm",
-            Self::Fnm => "fnm",
-            Self::Volta => "Volta",
-            Self::Mise => "mise",
-            Self::Asdf => "asdf",
-            Self::Pyenv => "pyenv",
-            Self::Rbenv => "rbenv",
-            Self::Sdkman => "SDKMAN!",
-            Self::Uv => "uv",
-            Self::Rustup => "rustup",
-            Self::RustupInstaller => "rustup installer",
-            Self::CargoInstall => "cargo install",
-            Self::PnpmHome => "pnpm home",
-            Self::DenoInstaller => "Deno installer",
-            Self::BunInstaller => "Bun installer",
-            Self::MacosInstaller => "macOS Installer (.pkg)",
-            Self::PythonOrgInstaller => "python.org macOS installer",
-            Self::MacPorts => "MacPorts",
-            Self::Dpkg => "dpkg",
-            Self::Rpm => "RPM",
-            Self::Pacman => "pacman",
-            Self::Apk => "apk",
-            Self::OperatingSystem => "operating system",
-            Self::UnconfirmedOwner => "unconfirmed owner",
-        }
-    }
-
-    pub(crate) fn from_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "Nix" => Self::Nix,
-            "Homebrew" => Self::Homebrew,
-            "nvm" => Self::Nvm,
-            "fnm" => Self::Fnm,
-            "Volta" => Self::Volta,
-            "mise" => Self::Mise,
-            "asdf" => Self::Asdf,
-            "pyenv" => Self::Pyenv,
-            "rbenv" => Self::Rbenv,
-            "SDKMAN!" => Self::Sdkman,
-            "uv" => Self::Uv,
-            "rustup" => Self::Rustup,
-            "rustup installer" => Self::RustupInstaller,
-            "cargo install" => Self::CargoInstall,
-            "pnpm home" => Self::PnpmHome,
-            "Deno installer" => Self::DenoInstaller,
-            "Bun installer" => Self::BunInstaller,
-            "macOS Installer (.pkg)" => Self::MacosInstaller,
-            "python.org macOS installer" => Self::PythonOrgInstaller,
-            "MacPorts" => Self::MacPorts,
-            "dpkg" => Self::Dpkg,
-            "RPM" => Self::Rpm,
-            "pacman" => Self::Pacman,
-            "apk" => Self::Apk,
-            "operating system" => Self::OperatingSystem,
-            "unconfirmed owner" => Self::UnconfirmedOwner,
-            _ => return None,
-        })
-    }
-
-    pub(super) const fn kind(self) -> OwnerKind {
-        match self {
-            Self::Nix
-            | Self::Homebrew
-            | Self::MacPorts
-            | Self::Dpkg
-            | Self::Rpm
-            | Self::Pacman
-            | Self::Apk => OwnerKind::PackageManager,
-            Self::Nvm
-            | Self::Fnm
-            | Self::Volta
-            | Self::Mise
-            | Self::Asdf
-            | Self::Pyenv
-            | Self::Rbenv
-            | Self::Sdkman
-            | Self::Uv
-            | Self::Rustup => OwnerKind::VersionManager,
-            Self::RustupInstaller
-            | Self::CargoInstall
-            | Self::PnpmHome
-            | Self::DenoInstaller
-            | Self::BunInstaller => OwnerKind::ToolInstaller,
-            Self::MacosInstaller | Self::PythonOrgInstaller => OwnerKind::Installer,
-            Self::OperatingSystem => OwnerKind::OperatingSystem,
-            Self::UnconfirmedOwner => OwnerKind::Unknown,
-        }
-    }
-
     pub(crate) const fn manager_executable(self) -> Option<&'static str> {
         match self {
             Self::Fnm => Some("fnm"),
@@ -357,7 +236,8 @@ impl OwnerId {
                 ..ActionGuide::default()
             },
             Self::PythonOrgInstaller => ActionGuide {
-                inspect: Some(format!("pkgutil --pkg-info {package}")),
+                inspect: package_id_from_command_context(&package)
+                    .map(|id| format!("pkgutil --pkg-info {id}")),
                 note: Some("Update with a newer python.org installer. Follow python.org's macOS uninstall guidance rather than deleting framework files blindly.".into()),
                 ..ActionGuide::default()
             },
@@ -393,7 +273,7 @@ impl OwnerId {
                 note: Some("Update this runtime through operating-system updates. Removing an OS-provided runtime is not recommended by this tool.".into()),
                 ..ActionGuide::default()
             },
-            Self::UnconfirmedOwner => ActionGuide {
+            Self::UnconfirmedOwner | Self::UnconfirmedSource => ActionGuide {
                 inspect: unknown_inspect_command(&path),
                 note: Some("Ownership is unconfirmed. Do not update or remove this file until a receipt, package record, or installer is identified.".into()),
                 ..ActionGuide::default()
@@ -440,38 +320,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn owner_names_round_trip_to_typed_ids() {
-        let owners = [
-            OwnerId::Nix,
-            OwnerId::Homebrew,
-            OwnerId::Nvm,
-            OwnerId::Fnm,
-            OwnerId::Volta,
-            OwnerId::Mise,
-            OwnerId::Asdf,
-            OwnerId::Pyenv,
-            OwnerId::Rbenv,
-            OwnerId::Sdkman,
-            OwnerId::Uv,
-            OwnerId::Rustup,
-            OwnerId::RustupInstaller,
-            OwnerId::CargoInstall,
-            OwnerId::PnpmHome,
-            OwnerId::DenoInstaller,
-            OwnerId::BunInstaller,
-            OwnerId::MacosInstaller,
-            OwnerId::PythonOrgInstaller,
-            OwnerId::MacPorts,
-            OwnerId::Dpkg,
-            OwnerId::Rpm,
-            OwnerId::Pacman,
-            OwnerId::Apk,
-            OwnerId::OperatingSystem,
-            OwnerId::UnconfirmedOwner,
-        ];
-
-        for owner in owners {
-            assert_eq!(OwnerId::from_name(owner.name()), Some(owner));
+    fn macos_receipt_installers_omit_inspect_without_a_real_package() {
+        // Both arms build a `pkgutil --pkg-info <package>` inspect command from
+        // the action-guide package placeholder; neither should emit it verbatim
+        // when no package was actually detected.
+        let path = Path::new("/usr/local/bin/fixture");
+        for id in [OwnerId::MacosInstaller, OwnerId::PythonOrgInstaller] {
+            let guide = id.actions("fixture", None, None, path);
+            assert!(guide.inspect.is_none(), "owner: {}", id.as_str());
         }
     }
 }

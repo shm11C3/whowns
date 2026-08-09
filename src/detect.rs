@@ -2,11 +2,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::model::{ActionGuide, Confidence, Evidence, OwnerKind, OwnershipNode};
+use crate::model::{ActionGuide, Confidence, Evidence, OwnerId, OwnershipNode};
 
 mod owner;
 
-pub(crate) use owner::OwnerId;
 use owner::PATH_MANAGER_RULES;
 
 type Detector = for<'a> fn(&DetectionContext<'a>) -> Option<OwnershipNode>;
@@ -86,15 +85,7 @@ impl<'a> DetectionContext<'a> {
             version.as_deref(),
             self.real_path,
         );
-        owner(
-            id.name(),
-            id.kind(),
-            confidence,
-            package,
-            version,
-            evidence,
-            actions,
-        )
+        owner(id, confidence, package, version, evidence, actions)
     }
 }
 
@@ -266,9 +257,7 @@ fn detect_unconfirmed(context: &DetectionContext<'_>) -> OwnershipNode {
 }
 
 pub fn enrich_with_manager_query(owner: &mut OwnershipNode, command: &str, expected_path: &Path) {
-    let Some(id) = OwnerId::from_name(&owner.name) else {
-        return;
-    };
+    let id = owner.id;
     let Some(query) = manager_query(id, command, expected_path) else {
         return;
     };
@@ -328,12 +317,8 @@ fn manager_query(id: OwnerId, command: &str, expected_path: &Path) -> Option<Man
     })
 }
 
-pub(crate) fn owner_id(owner: &OwnershipNode) -> Option<OwnerId> {
-    OwnerId::from_name(&owner.name)
-}
-
 pub(crate) fn unconfirmed_manager_source(manager: OwnerId, path: Option<&Path>) -> OwnershipNode {
-    let manager = manager.name();
+    let manager = manager.display_name();
     let mut evidence = Vec::new();
     if let Some(path) = path {
         evidence.push(Evidence::new(
@@ -350,8 +335,7 @@ pub(crate) fn unconfirmed_manager_source(manager: OwnerId, path: Option<&Path>) 
         ));
     }
     owner(
-        "unconfirmed source",
-        OwnerKind::Unknown,
+        OwnerId::UnconfirmedSource,
         Confidence::Unknown,
         None,
         None,
@@ -366,8 +350,7 @@ pub(crate) fn unconfirmed_manager_source(manager: OwnerId, path: Option<&Path>) 
 }
 
 fn owner(
-    name: &str,
-    kind: OwnerKind,
+    id: OwnerId,
     confidence: Confidence,
     package: Option<String>,
     version: Option<String>,
@@ -375,8 +358,7 @@ fn owner(
     actions: ActionGuide,
 ) -> OwnershipNode {
     OwnershipNode {
-        name: name.into(),
-        kind,
+        id,
         package,
         version,
         confidence,
@@ -471,8 +453,7 @@ fn python_org_receipt(
     let id = OwnerId::PythonOrgInstaller;
     let guide = id.actions(command, Some(&package), Some(version), real_path);
     Some(owner(
-        id.name(),
-        id.kind(),
+        id,
         Confidence::Probable,
         Some(package),
         Some(version.into()),
@@ -504,8 +485,7 @@ fn macos_receipt(command: &str, path: &Path) -> Option<OwnershipNode> {
     let id = OwnerId::MacosInstaller;
     let guide = id.actions(command, Some(&package), version.as_deref(), path);
     Some(owner(
-        id.name(),
-        id.kind(),
+        id,
         Confidence::Confirmed,
         Some(package),
         version,
@@ -558,8 +538,7 @@ fn linux_package(command: &str, path: &Path) -> Option<OwnershipNode> {
             raw.clone()
         };
         return Some(owner(
-            id.name(),
-            id.kind(),
+            id,
             Confidence::Confirmed,
             Some(package.clone()),
             None,
@@ -576,6 +555,7 @@ fn linux_package(command: &str, path: &Path) -> Option<OwnershipNode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::OwnerKind;
 
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
@@ -583,7 +563,7 @@ mod tests {
     struct PathManagerFixture {
         command: &'static str,
         path: &'static str,
-        owner: &'static str,
+        owner: OwnerId,
         kind: OwnerKind,
         confidence: Confidence,
         package: Option<&'static str>,
@@ -608,7 +588,7 @@ mod tests {
     fn detects_nvm_with_version_and_actions() {
         let path = Path::new("/home/me/.nvm/versions/node/v22.3.0/bin/node");
         let result = detect("node", path, path);
-        assert_eq!(result.name, "nvm");
+        assert_eq!(result.id, OwnerId::Nvm);
         assert_eq!(result.package.as_deref(), Some("node"));
         assert_eq!(result.version.as_deref(), Some("22.3.0"));
         assert_eq!(result.confidence, Confidence::Confirmed);
@@ -624,7 +604,7 @@ mod tests {
             PathManagerFixture {
                 command: "node",
                 path: "/nix/store/abc123-nodejs-22.3.0/bin/node",
-                owner: "Nix",
+                owner: OwnerId::Nix,
                 kind: OwnerKind::PackageManager,
                 confidence: Confidence::Confirmed,
                 package: Some("nodejs-22.3.0"),
@@ -634,7 +614,7 @@ mod tests {
             PathManagerFixture {
                 command: "node",
                 path: "/home/me/.local/share/fnm/node-versions/v22.3.0/installation/bin/node",
-                owner: "fnm",
+                owner: OwnerId::Fnm,
                 kind: OwnerKind::VersionManager,
                 confidence: Confidence::Confirmed,
                 package: Some("node"),
@@ -644,7 +624,7 @@ mod tests {
             PathManagerFixture {
                 command: "node",
                 path: "/home/me/.volta/tools/image/node/22.3.0/bin/node",
-                owner: "Volta",
+                owner: OwnerId::Volta,
                 kind: OwnerKind::VersionManager,
                 confidence: Confidence::Confirmed,
                 package: Some("node"),
@@ -654,7 +634,7 @@ mod tests {
             PathManagerFixture {
                 command: "node",
                 path: "/home/me/.local/share/mise/installs/node/22.3.0/bin/node",
-                owner: "mise",
+                owner: OwnerId::Mise,
                 kind: OwnerKind::VersionManager,
                 confidence: Confidence::Confirmed,
                 package: Some("node"),
@@ -664,7 +644,7 @@ mod tests {
             PathManagerFixture {
                 command: "python3",
                 path: "/home/me/.pyenv/versions/3.12.4/bin/python3",
-                owner: "pyenv",
+                owner: OwnerId::Pyenv,
                 kind: OwnerKind::VersionManager,
                 confidence: Confidence::Confirmed,
                 package: Some("python"),
@@ -674,7 +654,7 @@ mod tests {
             PathManagerFixture {
                 command: "ruby",
                 path: "/home/me/.rbenv/versions/3.3.3/bin/ruby",
-                owner: "rbenv",
+                owner: OwnerId::Rbenv,
                 kind: OwnerKind::VersionManager,
                 confidence: Confidence::Confirmed,
                 package: Some("ruby"),
@@ -684,7 +664,7 @@ mod tests {
             PathManagerFixture {
                 command: "java",
                 path: "/home/me/.sdkman/candidates/java/21.0.2-tem/bin/java",
-                owner: "SDKMAN!",
+                owner: OwnerId::Sdkman,
                 kind: OwnerKind::VersionManager,
                 confidence: Confidence::Confirmed,
                 package: Some("java"),
@@ -694,7 +674,7 @@ mod tests {
             PathManagerFixture {
                 command: "python3",
                 path: "/home/me/.local/share/uv/python/cpython-3.12.4-linux-x86_64-gnu/bin/python3",
-                owner: "uv",
+                owner: OwnerId::Uv,
                 kind: OwnerKind::VersionManager,
                 confidence: Confidence::Confirmed,
                 package: Some("python"),
@@ -704,7 +684,7 @@ mod tests {
             PathManagerFixture {
                 command: "pnpm",
                 path: "/home/me/.local/share/pnpm/pnpm",
-                owner: "pnpm home",
+                owner: OwnerId::PnpmHome,
                 kind: OwnerKind::ToolInstaller,
                 confidence: Confidence::Probable,
                 package: None,
@@ -714,7 +694,7 @@ mod tests {
             PathManagerFixture {
                 command: "deno",
                 path: "/home/me/.deno/bin/deno",
-                owner: "Deno installer",
+                owner: OwnerId::DenoInstaller,
                 kind: OwnerKind::ToolInstaller,
                 confidence: Confidence::Confirmed,
                 package: None,
@@ -724,7 +704,7 @@ mod tests {
             PathManagerFixture {
                 command: "bun",
                 path: "/home/me/.bun/bin/bun",
-                owner: "Bun installer",
+                owner: OwnerId::BunInstaller,
                 kind: OwnerKind::ToolInstaller,
                 confidence: Confidence::Confirmed,
                 package: None,
@@ -736,29 +716,15 @@ mod tests {
         for fixture in fixtures {
             let path = Path::new(fixture.path);
             let result = detect(fixture.command, path, path);
-            assert_eq!(result.name, fixture.owner, "path: {}", fixture.path);
-            assert_eq!(result.kind, fixture.kind, "owner: {}", fixture.owner);
-            assert_eq!(
-                result.confidence, fixture.confidence,
-                "owner: {}",
-                fixture.owner
-            );
-            assert_eq!(
-                result.package.as_deref(),
-                fixture.package,
-                "owner: {}",
-                fixture.owner
-            );
-            assert_eq!(
-                result.version.as_deref(),
-                fixture.version,
-                "owner: {}",
-                fixture.owner
-            );
+            let owner = fixture.owner.as_str();
+            assert_eq!(result.id, fixture.owner, "path: {}", fixture.path);
+            assert_eq!(result.kind(), fixture.kind, "owner: {owner}");
+            assert_eq!(result.confidence, fixture.confidence, "owner: {owner}");
+            assert_eq!(result.package.as_deref(), fixture.package, "owner: {owner}");
+            assert_eq!(result.version.as_deref(), fixture.version, "owner: {owner}");
             assert!(
                 action_text(&result.actions).contains(fixture.action_fragment),
-                "owner: {}",
-                fixture.owner
+                "owner: {owner}"
             );
         }
     }
@@ -770,8 +736,8 @@ mod tests {
             Path::new("/home/me/.cargo/bin/rustc"),
             Path::new("/home/me/.cargo/bin/rustup"),
         );
-        assert_eq!(rustup.name, "rustup");
-        assert_eq!(rustup.kind, OwnerKind::VersionManager);
+        assert_eq!(rustup.id, OwnerId::Rustup);
+        assert_eq!(rustup.kind(), OwnerKind::VersionManager);
         assert_eq!(rustup.confidence, Confidence::Confirmed);
         assert_eq!(rustup.actions.update.as_deref(), Some("rustup update"));
 
@@ -780,8 +746,8 @@ mod tests {
             Path::new("/home/me/.cargo/bin/rustup"),
             Path::new("/home/me/.cargo/bin/rustup"),
         );
-        assert_eq!(installer.name, "rustup installer");
-        assert_eq!(installer.kind, OwnerKind::ToolInstaller);
+        assert_eq!(installer.id, OwnerId::RustupInstaller);
+        assert_eq!(installer.kind(), OwnerKind::ToolInstaller);
         assert_eq!(
             installer.actions.remove.as_deref(),
             Some("rustup self uninstall")
@@ -792,8 +758,8 @@ mod tests {
             Path::new("/home/me/.cargo/bin/rg"),
             Path::new("/home/me/.cargo/bin/rg"),
         );
-        assert_eq!(cargo.name, "cargo install");
-        assert_eq!(cargo.kind, OwnerKind::ToolInstaller);
+        assert_eq!(cargo.id, OwnerId::CargoInstall);
+        assert_eq!(cargo.kind(), OwnerKind::ToolInstaller);
         assert_eq!(cargo.confidence, Confidence::Probable);
         assert!(cargo.actions.update.is_none());
         assert!(cargo.actions.remove.is_none());
@@ -804,8 +770,8 @@ mod tests {
         let path = Path::new("/opt/local/bin/fixture-tool-that-does-not-exist");
         let result = detect("fixture-tool", path, path);
 
-        assert_eq!(result.name, "MacPorts");
-        assert_eq!(result.kind, OwnerKind::PackageManager);
+        assert_eq!(result.id, OwnerId::MacPorts);
+        assert_eq!(result.kind(), OwnerKind::PackageManager);
         assert_eq!(result.confidence, Confidence::Probable);
         assert!(
             action_text(&result.actions)
@@ -818,8 +784,8 @@ mod tests {
         let path = Path::new("/System/whowns-fixture-that-does-not-exist");
         let result = detect("fixture-tool", path, path);
 
-        assert_eq!(result.name, "operating system");
-        assert_eq!(result.kind, OwnerKind::OperatingSystem);
+        assert_eq!(result.id, OwnerId::OperatingSystem);
+        assert_eq!(result.kind(), OwnerKind::OperatingSystem);
         assert_eq!(result.confidence, Confidence::Probable);
         assert!(result.actions.update.is_none());
         assert!(result.actions.remove.is_none());
@@ -841,7 +807,7 @@ mod tests {
         let link = Path::new("/opt/homebrew/bin/node");
         let real = Path::new("/opt/homebrew/Cellar/node/24.1.0/bin/node");
         let result = detect("node", link, real);
-        assert_eq!(result.name, "Homebrew");
+        assert_eq!(result.id, OwnerId::Homebrew);
         assert_eq!(result.package.as_deref(), Some("node"));
         assert_eq!(result.version.as_deref(), Some("24.1.0"));
         assert_eq!(result.confidence, Confidence::Confirmed);
@@ -858,7 +824,7 @@ mod tests {
 
         let result = detect("node", path, real);
 
-        assert_eq!(result.name, "Homebrew");
+        assert_eq!(result.id, OwnerId::Homebrew);
         assert_eq!(result.package.as_deref(), Some("node"));
         assert_eq!(result.version.as_deref(), Some("24.1.0"));
     }
@@ -878,7 +844,7 @@ mod tests {
             Path::new("/opt/homebrew/lib/node_modules/npm/bin/npm-cli.js"),
         );
 
-        assert_eq!(result.name, "Homebrew");
+        assert_eq!(result.id, OwnerId::Homebrew);
         assert_eq!(result.package.as_deref(), Some("node"));
         assert_eq!(result.version.as_deref(), Some("25.6.1"));
         fs::remove_file(link).unwrap();
@@ -888,7 +854,7 @@ mod tests {
     fn leaves_unrecognized_usr_local_owner_unconfirmed() {
         let path = Path::new("/usr/local/bin/custom");
         let result = detect("custom", path, path);
-        assert_eq!(result.name, "unconfirmed owner");
+        assert_eq!(result.id, OwnerId::UnconfirmedOwner);
         assert_eq!(result.confidence, Confidence::Unknown);
         assert!(result.actions.update.is_none());
         assert!(result.actions.remove.is_none());
@@ -897,6 +863,42 @@ mod tests {
                 .evidence
                 .iter()
                 .any(|evidence| evidence.source == "unconfirmed")
+        );
+    }
+
+    #[test]
+    fn detected_owners_carry_identity_independent_of_display_text() {
+        let path = Path::new("/home/me/.sdkman/candidates/java/21.0.2-tem/bin/java");
+        let result = detect("java", path, path);
+
+        assert_eq!(result.id, OwnerId::Sdkman);
+        assert_eq!(result.id.as_str(), "sdkman");
+        assert_eq!(result.display_name(), "SDKMAN!");
+        // The action guide is selected by identity, so it survives a rename of
+        // the display text.
+        assert_eq!(result.actions.update.as_deref(), Some("sdk upgrade java"));
+    }
+
+    #[test]
+    fn manager_lookups_are_keyed_by_identity() {
+        assert_eq!(OwnerId::CargoInstall.manager_executable(), Some("cargo"));
+        assert_eq!(OwnerId::Volta.manager_executable(), Some("volta"));
+        // Owners that are not discoverable as an executable on PATH.
+        assert_eq!(OwnerId::Nvm.manager_executable(), None);
+        assert_eq!(OwnerId::Homebrew.manager_executable(), None);
+    }
+
+    #[test]
+    fn unconfirmed_source_keeps_its_own_identity_and_names_the_manager() {
+        let source = unconfirmed_manager_source(OwnerId::Sdkman, None);
+
+        assert_eq!(source.id, OwnerId::UnconfirmedSource);
+        assert_eq!(source.confidence, Confidence::Unknown);
+        assert!(
+            source
+                .evidence
+                .iter()
+                .any(|evidence| evidence.detail.contains("SDKMAN!"))
         );
     }
 
