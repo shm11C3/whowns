@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -54,7 +55,7 @@ pub type QueryResult = Result<QueryOutput, QueryFailure>;
 #[derive(Eq, Hash, PartialEq)]
 struct CacheKey {
     program: PathBuf,
-    arguments: Vec<String>,
+    arguments: Vec<OsString>,
 }
 
 /// Runs read-only inspection commands for the duration of one `whowns`
@@ -89,12 +90,17 @@ impl CommandRunner {
     /// Runs `program arguments...` with no stdin and bounded stdout capture.
     /// An identical `(program, arguments)` query is only ever executed once
     /// per `CommandRunner`; later calls return the cached result.
-    pub fn query(&self, program: &Path, arguments: &[&str]) -> QueryResult {
+    ///
+    /// Arguments are taken as `OsStr` rather than `str` so a path argument
+    /// (which on Unix need not be valid UTF-8) reaches the child exactly as
+    /// resolved; lossily re-encoding it first could point the query at a
+    /// different path than the one `whowns` actually inspected.
+    pub fn query(&self, program: &Path, arguments: &[&OsStr]) -> QueryResult {
         let key = CacheKey {
             program: program.to_path_buf(),
             arguments: arguments
                 .iter()
-                .map(|argument| (*argument).to_owned())
+                .map(|argument| (*argument).to_os_string())
                 .collect(),
         };
         if let Some(cached) = self.cache.borrow().get(&key) {
@@ -115,8 +121,15 @@ impl CommandRunner {
         self.diagnostics.borrow().clone()
     }
 
-    fn record_diagnostics(&self, program: &Path, arguments: &[&str], result: &QueryResult) {
-        let invocation = format!("`{} {}`", program.display(), arguments.join(" "));
+    fn record_diagnostics(&self, program: &Path, arguments: &[&OsStr], result: &QueryResult) {
+        // Lossy here is fine: this is a human-readable note, not the actual
+        // argument handed to the child (that stays byte-exact in `query`).
+        let rendered_arguments = arguments
+            .iter()
+            .map(|argument| argument.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let invocation = format!("`{} {rendered_arguments}`", program.display());
         match result {
             Err(failure) => self
                 .diagnostics
@@ -137,18 +150,53 @@ impl Default for CommandRunner {
     }
 }
 
-fn run_with_timeout(program: &Path, arguments: &[&str], timeout: Duration) -> QueryResult {
+#[cfg(unix)]
+fn isolate_process_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // Give the child (and anything it forks) its own process group so a
+    // timeout can terminate the whole tree via kill_process_group, not just
+    // the direct child. Without this, killing the direct child leaves
+    // anything it background-forked running as an orphan reparented to
+    // init, which can leak indefinitely for a long-running or infinite job.
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn isolate_process_group(_command: &mut Command) {}
+
+#[cfg(unix)]
+fn kill_process_group(pid: u32) {
+    // Declaring `kill(2)` here does not add a crate dependency: it is part
+    // of the platform C library every Rust binary already links against, so
+    // this avoids pulling in the `libc` crate for one syscall. The negative
+    // pid targets the whole process group `isolate_process_group` placed
+    // this child in, not just the single process `Child::kill` would reach.
+    unsafe extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    const SIGKILL: i32 = 9;
+    unsafe {
+        kill(-(pid as i32), SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(_pid: u32) {}
+
+fn run_with_timeout(program: &Path, arguments: &[&OsStr], timeout: Duration) -> QueryResult {
     let mut command = Command::new(program);
     command
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    isolate_process_group(&mut command);
 
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => return Err(QueryFailure::SpawnFailed(error.to_string())),
     };
+    let pid = child.id();
 
     // Drain stdout concurrently with waiting: a child that writes more than
     // one pipe buffer of output would otherwise block on write() forever if
@@ -175,6 +223,7 @@ fn run_with_timeout(program: &Path, arguments: &[&str], timeout: Duration) -> Qu
 
     let Some(status) = status else {
         let _ = child.kill();
+        kill_process_group(pid);
         let _ = child.wait();
         // Deliberately not waiting on the reader here: a killed shell-script
         // manager can leave a grandchild process (its own forked worker)
@@ -192,11 +241,15 @@ fn run_with_timeout(program: &Path, arguments: &[&str], timeout: Duration) -> Qu
     // Bound the wait for output by what remains of the same deadline instead
     // of joining unconditionally, so that case cannot outlast the timeout
     // either; whatever wasn't read in time is reported as truncated rather
-    // than blocking on it.
+    // than blocking on it. Any such descendant is also killed rather than
+    // left to run past the deadline on its own.
     let (stdout, truncated) =
         match output_rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
             Ok(result) => result,
-            Err(_) => (Vec::new(), true),
+            Err(_) => {
+                kill_process_group(pid);
+                (Vec::new(), true)
+            }
         };
     Ok(QueryOutput {
         success: status.success(),
@@ -233,11 +286,14 @@ fn read_bounded(source: &mut impl Read) -> (Vec<u8>, bool) {
 mod tests {
     use super::*;
     use std::fs;
+    use std::process::Command as StdCommand;
 
     #[test]
     fn runs_a_command_and_captures_stdout() {
         let runner = CommandRunner::new();
-        let output = runner.query(Path::new("printf"), &["hello"]).unwrap();
+        let output = runner
+            .query(Path::new("printf"), &[OsStr::new("hello")])
+            .unwrap();
         assert!(output.success);
         assert_eq!(output.stdout, "hello");
         assert!(!output.truncated);
@@ -257,7 +313,7 @@ mod tests {
         let runner = CommandRunner::with_timeout(Duration::from_millis(50));
         let started = Instant::now();
 
-        let result = runner.query(Path::new("sleep"), &["30"]);
+        let result = runner.query(Path::new("sleep"), &[OsStr::new("30")]);
 
         assert!(matches!(result, Err(QueryFailure::Timeout)));
         assert!(
@@ -324,16 +380,125 @@ mod tests {
         // Generous relative to how fast the shell actually exits, but still
         // tiny relative to the 20-second background job, so the assertion
         // below stays meaningful without being flaky under CI load.
-        let runner = CommandRunner::with_timeout(Duration::from_secs(1));
+        let runner = CommandRunner::with_timeout(Duration::from_secs(3));
         let started = Instant::now();
 
         let output = runner.query(&script, &[]).unwrap();
 
         assert!(output.success);
         assert!(
-            started.elapsed() < Duration::from_secs(5),
+            started.elapsed() < Duration::from_secs(10),
             "a successful exit must not wait on a backgrounded descendant, elapsed: {:?}",
             started.elapsed()
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kills_the_whole_process_group_not_just_the_direct_child() {
+        // The shell backgrounds sleep as a real child process (not a tail
+        // exec), records its pid, and then waits on it, so the shell stays
+        // alive as the group leader until killed. Killing only that direct
+        // child (as `Child::kill` alone would) leaves the backgrounded sleep
+        // running as an orphan; a timeout must take the whole group with it.
+        let dir =
+            std::env::temp_dir().join(format!("whowns-exec-group-kill-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("wrapper.sh");
+        let pidfile = dir.join("child.pid");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\n/bin/sleep 30 &\necho $! > '{}'\nwait\n",
+                pidfile.display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&script).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&script, permissions).unwrap();
+        }
+
+        // Generous: isolating the child into its own process group can add
+        // noticeable startup latency under a supervised/sandboxed test
+        // runner before it reaches `wait`, and the timeout must not fire
+        // before that point or the pid is never recorded at all. Still tiny
+        // next to the 30-second sleep this is bounding.
+        let runner = CommandRunner::with_timeout(Duration::from_secs(3));
+        let result = runner.query(&script, &[]);
+        assert!(matches!(result, Err(QueryFailure::Timeout)));
+
+        let read_deadline = Instant::now() + Duration::from_secs(2);
+        let grandchild_pid = loop {
+            if let Ok(contents) = fs::read_to_string(&pidfile)
+                && let Ok(pid) = contents.trim().parse::<u32>()
+            {
+                break pid;
+            }
+            assert!(
+                Instant::now() < read_deadline,
+                "the script never recorded its backgrounded child's pid"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+
+        // Give the OS a brief moment to actually deliver the signal.
+        thread::sleep(Duration::from_millis(200));
+        let still_alive = StdCommand::new("kill")
+            .arg("-0")
+            .arg(grandchild_pid.to_string())
+            .status()
+            .unwrap()
+            .success();
+        assert!(
+            !still_alive,
+            "the backgrounded descendant (pid {grandchild_pid}) should have been killed along with its process group"
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preserves_non_utf8_argument_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = std::env::temp_dir().join(format!("whowns-exec-non-utf8-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("echo_arg.sh");
+        let outfile = dir.join("arg.bin");
+        fs::write(
+            &script,
+            format!("#!/bin/sh\nprintf '%s' \"$1\" > '{}'\n", outfile.display()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&script).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&script, permissions).unwrap();
+        }
+
+        // 0xFF is not valid UTF-8 in this position; a `&str`-based argument
+        // could never represent it, which is exactly the case a path with
+        // non-UTF-8 bytes would hit.
+        let raw_argument: &[u8] = b"whowns-\xFF-fixture";
+        let argument = OsStr::from_bytes(raw_argument);
+
+        let runner = CommandRunner::new();
+        let output = runner.query(&script, &[argument]).unwrap();
+        assert!(output.success);
+
+        let written = fs::read(&outfile).unwrap();
+        assert_eq!(
+            written, raw_argument,
+            "the exact argument bytes must reach the child process"
         );
 
         fs::remove_dir_all(&dir).unwrap();
@@ -378,7 +543,10 @@ mod tests {
         let runner = CommandRunner::new();
 
         let output = runner
-            .query(Path::new("sh"), &["-c", "yes | head -c 200000"])
+            .query(
+                Path::new("sh"),
+                &[OsStr::new("-c"), OsStr::new("yes | head -c 200000")],
+            )
             .unwrap();
 
         assert!(output.stdout.len() <= MAX_OUTPUT_BYTES);

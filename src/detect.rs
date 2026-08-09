@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -337,7 +338,12 @@ fn manager_query(
         .chain(query.arguments.iter().copied())
         .collect::<Vec<_>>()
         .join(" ");
-    match runner.query(&program, &query.arguments) {
+    let arguments: Vec<&OsStr> = query
+        .arguments
+        .iter()
+        .map(|argument| OsStr::new(*argument))
+        .collect();
+    match runner.query(&program, &arguments) {
         Err(failure) => Some(ManagerQuery {
             result: None,
             evidence: Evidence::new(
@@ -495,7 +501,9 @@ fn python_org_receipt(
     })?;
     let package = format!("org.python.Python.PythonFramework-{version}");
     let program = resolve_program("pkgutil")?;
-    let output = runner.query(&program, &["--pkg-info", &package]).ok()?;
+    let output = runner
+        .query(&program, &[OsStr::new("--pkg-info"), OsStr::new(&package)])
+        .ok()?;
     if !output.success {
         return None;
     }
@@ -518,9 +526,8 @@ fn python_org_receipt(
 #[cfg(target_os = "macos")]
 fn macos_receipt(runner: &CommandRunner, command: &str, path: &Path) -> Option<OwnershipNode> {
     let program = resolve_program("pkgutil")?;
-    let path_text = path.to_string_lossy();
     let output = runner
-        .query(&program, &["--file-info", path_text.as_ref()])
+        .query(&program, &[OsStr::new("--file-info"), path.as_os_str()])
         .ok()?;
     let package = field(&output.stdout, "pkgid:")?;
     let version = field(&output.stdout, "pkg-version:");
@@ -557,7 +564,6 @@ fn field(text: &str, prefix: &str) -> Option<String> {
 
 #[cfg(target_os = "linux")]
 fn linux_package(runner: &CommandRunner, command: &str, path: &Path) -> Option<OwnershipNode> {
-    let path_text = path.to_str()?;
     let queries: [(&str, &[&str], OwnerId); 4] = [
         ("dpkg-query", &["-S"], OwnerId::Dpkg),
         ("rpm", &["-qf"], OwnerId::Rpm),
@@ -568,7 +574,11 @@ fn linux_package(runner: &CommandRunner, command: &str, path: &Path) -> Option<O
         let Some(program) = resolve_program(program_name) else {
             continue;
         };
-        let full_arguments: Vec<&str> = arguments.iter().copied().chain([path_text]).collect();
+        let full_arguments: Vec<&OsStr> = arguments
+            .iter()
+            .map(|argument| OsStr::new(*argument))
+            .chain([path.as_os_str()])
+            .collect();
         let Ok(output) = runner.query(&program, &full_arguments) else {
             continue;
         };
