@@ -157,13 +157,13 @@ jobs:
         with:
           subject-path: dist/SHA256SUMS
 
-      - name: Publish GitHub Release
+      - name: Create draft GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mapfile -t assets < <(find dist -maxdepth 1 -type f -print | sort)
-          release_args=(--verify-tag --generate-notes)
+          release_args=(--verify-tag --generate-notes --draft)
           if [[ "${GITHUB_REF_NAME#v}" == *-* ]]; then
             release_args+=(--prerelease)
           fi

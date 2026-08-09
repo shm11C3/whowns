@@ -1,6 +1,6 @@
 # GitHub Releases
 
-GitHub Releases is the primary binary distribution channel. Merging a package version change to `main` runs `.github/workflows/tag-release.yml`, which pushes the matching `v` tag and starts `.github/workflows/release.yml`. The release workflow verifies the source, builds and packages every target, and publishes the release.
+GitHub Releases is the primary binary distribution channel. Merging a package version change to `main` runs `.github/workflows/tag-release.yml`, which pushes the matching `v` tag and starts `.github/workflows/release.yml`. The release workflow verifies the source, builds and packages every target, and creates a draft release for review.
 
 ## Distribution targets
 
@@ -33,8 +33,9 @@ Each published release also contains these top-level assets:
 3. Run `cargo fmt --all -- --check`, `cargo test --locked --all-targets`, `cargo clippy --locked --all-targets -- -D warnings`, and `sh tests/install.sh`.
 4. Open and merge a pull request containing the version change.
 5. Confirm that the `Tag release` workflow pushed the matching annotated tag and started the `Release` workflow.
+6. Review the generated notes and assets in the draft release, then publish it manually.
 
-The tag workflow stops if `Cargo.lock` is not synchronized or the tag already exists. It never moves an existing tag. The release workflow stops if the tag and `Cargo.toml` versions do not match. A release is published with GitHub-generated release notes only after every target succeeds. A version containing `-` is published as a prerelease.
+The tag workflow stops if `Cargo.lock` is not synchronized or the tag already exists. It never moves an existing tag. The release workflow stops if the tag and `Cargo.toml` versions do not match. A draft release with GitHub-generated release notes is created only after every target succeeds. A version containing `-` is marked as a prerelease when published.
 
 ## User verification
 
