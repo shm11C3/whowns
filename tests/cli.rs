@@ -10,6 +10,21 @@ use std::time::{Duration, Instant};
 
 const WHOWNS: &str = env!("CARGO_BIN_EXE_whowns");
 
+const MANAGER_ROOT_ENVIRONMENT: &[&str] = &[
+    "NVM_DIR",
+    "FNM_DIR",
+    "PYENV_ROOT",
+    "RBENV_ROOT",
+    "ASDF_DATA_DIR",
+    "VOLTA_HOME",
+    "MISE_DATA_DIR",
+    "CARGO_HOME",
+    "SDKMAN_DIR",
+    "UV_PYTHON_INSTALL_DIR",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+];
+
 static NEXT_SANDBOX: AtomicUsize = AtomicUsize::new(0);
 
 struct Sandbox {
@@ -43,16 +58,30 @@ impl Sandbox {
     }
 
     fn run(&self, binary: &str, arguments: &[&str], path_entries: &[&Path]) -> Output {
+        self.run_with_environment(binary, arguments, path_entries, &[])
+    }
+
+    fn run_with_environment(
+        &self,
+        binary: &str,
+        arguments: &[&str],
+        path_entries: &[&Path],
+        environment: &[(&str, &Path)],
+    ) -> Output {
         let path = env::join_paths(path_entries).unwrap();
-        Command::new(binary)
+        let mut command = Command::new(binary);
+        command
             .args(arguments)
             .current_dir(&self.root)
             .env("HOME", &self.root)
-            .env("PATH", path)
-            .env_remove("NVM_DIR")
-            .env_remove("SDKMAN_DIR")
-            .output()
-            .unwrap()
+            .env("PATH", path);
+        for variable in MANAGER_ROOT_ENVIRONMENT {
+            command.env_remove(variable);
+        }
+        for (variable, value) in environment {
+            command.env(variable, value);
+        }
+        command.output().unwrap()
     }
 }
 
@@ -109,6 +138,193 @@ fn explains_a_runtime_manager_and_the_managers_installation_source() {
     assert!(stdout.contains("├── mise [probable]"));
     assert!(stdout.contains("└── unconfirmed source [unknown]"));
     assert!(stdout.contains("kind: version_manager"));
+}
+
+#[test]
+fn honors_custom_manager_roots_from_environment() {
+    struct Case {
+        variable: &'static str,
+        root: &'static str,
+        executable: &'static str,
+        command: &'static str,
+        owner: &'static str,
+        version: Option<&'static str>,
+    }
+
+    let cases = [
+        Case {
+            variable: "NVM_DIR",
+            root: "custom/nvm",
+            executable: "versions/node/v22.3.0/bin/node",
+            command: "node",
+            owner: "nvm",
+            version: Some("22.3.0"),
+        },
+        Case {
+            variable: "PYENV_ROOT",
+            root: "custom/pyenv",
+            executable: "versions/3.12.4/bin/python3",
+            command: "python3",
+            owner: "pyenv",
+            version: Some("3.12.4"),
+        },
+        Case {
+            variable: "FNM_DIR",
+            root: "custom/fnm",
+            executable: "node-versions/v22.3.0/installation/bin/node",
+            command: "node",
+            owner: "fnm",
+            version: Some("22.3.0"),
+        },
+        Case {
+            variable: "RBENV_ROOT",
+            root: "custom/rbenv",
+            executable: "versions/3.3.3/bin/ruby",
+            command: "ruby",
+            owner: "rbenv",
+            version: Some("3.3.3"),
+        },
+        Case {
+            variable: "ASDF_DATA_DIR",
+            root: "custom/asdf",
+            executable: "installs/nodejs/22.3.0/bin/node",
+            command: "node",
+            owner: "asdf",
+            version: Some("22.3.0"),
+        },
+        Case {
+            variable: "VOLTA_HOME",
+            root: "custom/volta",
+            executable: "tools/image/node/22.3.0/bin/node",
+            command: "node",
+            owner: "Volta",
+            version: Some("22.3.0"),
+        },
+        Case {
+            variable: "MISE_DATA_DIR",
+            root: "custom/mise",
+            executable: "installs/node/22.3.0/bin/node",
+            command: "node",
+            owner: "mise",
+            version: Some("22.3.0"),
+        },
+        Case {
+            variable: "CARGO_HOME",
+            root: "custom/cargo",
+            executable: "bin/rg",
+            command: "rg",
+            owner: "cargo install",
+            version: None,
+        },
+        Case {
+            variable: "SDKMAN_DIR",
+            root: "custom/sdkman",
+            executable: "candidates/java/21.0.2-tem/bin/java",
+            command: "java",
+            owner: "SDKMAN!",
+            version: Some("21.0.2-tem"),
+        },
+        Case {
+            variable: "UV_PYTHON_INSTALL_DIR",
+            root: "custom/uv-python",
+            executable: "cpython-3.12.4-linux-x86_64-gnu/bin/python3",
+            command: "python3",
+            owner: "uv",
+            version: Some("cpython-3.12.4-linux-x86_64-gnu"),
+        },
+    ];
+
+    for case in cases {
+        let sandbox = Sandbox::new(case.variable);
+        let root = sandbox.path(case.root);
+        let executable = sandbox.executable(
+            format!("{}/{}", case.root, case.executable),
+            "#!/bin/sh\nexit 0\n",
+        );
+        let bin = executable.parent().unwrap();
+
+        let output = sandbox.run_with_environment(
+            WHOWNS,
+            &[case.command, "--explain"],
+            &[bin],
+            &[(case.variable, &root)],
+        );
+        let stdout = stdout(&output);
+
+        assert!(output.status.success(), "output: {stdout}");
+        assert!(
+            stdout.contains(&format!("→ {} [probable]", case.owner)),
+            "{} was not detected, output: {stdout}",
+            case.variable
+        );
+        assert!(
+            stdout.contains(&format!("${}", case.variable)),
+            "root source was not explained, output: {stdout}"
+        );
+        if let Some(version) = case.version {
+            assert!(
+                stdout.contains(&format!("version: {version}")),
+                "version was not parsed relative to the custom root, output: {stdout}"
+            );
+        }
+    }
+}
+
+#[test]
+fn explains_xdg_and_default_manager_roots() {
+    let xdg_cases = [
+        ("mise", "mise/installs/node/22.3.0/bin/node", "node", "mise"),
+        (
+            "fnm",
+            "fnm/node-versions/v22.3.0/installation/bin/node",
+            "node",
+            "fnm",
+        ),
+        (
+            "uv",
+            "uv/python/cpython-3.12.4-linux-x86_64-gnu/bin/python3",
+            "python3",
+            "uv",
+        ),
+    ];
+    for (name, executable, command, owner) in xdg_cases {
+        let sandbox = Sandbox::new(name);
+        let xdg_data = sandbox.path("xdg-data");
+        let executable =
+            sandbox.executable(format!("xdg-data/{executable}"), "#!/bin/sh\nexit 0\n");
+        let output = sandbox.run_with_environment(
+            WHOWNS,
+            &[command, "--explain"],
+            &[executable.parent().unwrap()],
+            &[("XDG_DATA_HOME", &xdg_data)],
+        );
+        let stdout = stdout(&output);
+        assert!(output.status.success(), "output: {stdout}");
+        assert!(
+            stdout.contains(&format!("{owner} [probable]")),
+            "output: {stdout}"
+        );
+        assert!(stdout.contains("$XDG_DATA_HOME"), "output: {stdout}");
+    }
+
+    let default_sandbox = Sandbox::new("default-manager-root");
+    let python =
+        default_sandbox.executable(".pyenv/versions/3.12.4/bin/python3", "#!/bin/sh\nexit 0\n");
+    let output = default_sandbox.run(
+        WHOWNS,
+        &["python3", "--explain"],
+        &[python.parent().unwrap()],
+    );
+    let default_stdout = stdout(&output);
+    assert!(output.status.success(), "output: {default_stdout}");
+    assert!(
+        default_stdout.contains("pyenv [probable]"),
+        "output: {default_stdout}"
+    );
+    assert!(
+        default_stdout.contains("default pyenv root"),
+        "output: {default_stdout}"
+    );
 }
 
 #[test]

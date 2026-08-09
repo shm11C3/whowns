@@ -1,4 +1,3 @@
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -17,13 +16,15 @@ struct UpstreamOwner {
 }
 
 pub fn inspect(command: &str, runner: &CommandRunner) -> OwnershipGraph {
-    from_resolutions(command, scan::find_executables(command), runner)
+    let roots = detect::ManagerRoots::from_environment();
+    from_resolutions(command, scan::find_executables(command), runner, &roots)
 }
 
 pub fn all(show_missing: bool, runner: &CommandRunner) -> Vec<OwnershipGraph> {
+    let roots = detect::ManagerRoots::from_environment();
     let mut graphs: Vec<_> = scan::KNOWN_RUNTIMES
         .iter()
-        .map(|command| inspect(command, runner))
+        .map(|command| from_resolutions(command, scan::find_executables(command), runner, &roots))
         .collect();
     if !show_missing {
         graphs.retain(|graph| !graph.resolutions.is_empty());
@@ -35,12 +36,13 @@ fn from_resolutions(
     command: &str,
     resolved: Vec<ResolvedExecutable>,
     runner: &CommandRunner,
+    roots: &detect::ManagerRoots,
 ) -> OwnershipGraph {
     let resolutions = resolved
         .into_iter()
         .map(|resolved| {
-            let primary = detect_owner(command, &resolved.path, &resolved.real_path, runner);
-            let owners = ownership_chain(primary, &resolved.path, runner);
+            let primary = detect_owner(command, &resolved.path, &resolved.real_path, runner, roots);
+            let owners = ownership_chain(primary, &resolved.path, runner, roots);
             Resolution {
                 path: resolved.path,
                 real_path: resolved.real_path,
@@ -64,9 +66,10 @@ fn detect_owner(
     path: &Path,
     real_path: &Path,
     runner: &CommandRunner,
+    roots: &detect::ManagerRoots,
 ) -> OwnershipNode {
-    let mut owner = detect::detect(command, path, real_path, runner);
-    detect::enrich_with_manager_query(&mut owner, command, real_path, runner);
+    let mut owner = detect::detect(command, path, real_path, runner, roots);
+    detect::enrich_with_manager_query(&mut owner, command, real_path, runner, roots);
     owner
 }
 
@@ -74,6 +77,7 @@ fn ownership_chain(
     primary: OwnershipNode,
     runtime_path: &Path,
     runner: &CommandRunner,
+    roots: &detect::ManagerRoots,
 ) -> Vec<OwnershipNode> {
     let mut visited = vec![(primary.id, path_identity(runtime_path))];
     let mut current_path = runtime_path.to_path_buf();
@@ -94,7 +98,7 @@ fn ownership_chain(
             break;
         }
 
-        let Some(upstream) = upstream_owner(current, &current_path, runner) else {
+        let Some(upstream) = upstream_owner(current, &current_path, runner, roots) else {
             break;
         };
         if upstream.node.id == OwnerId::UnconfirmedSource {
@@ -138,6 +142,7 @@ fn upstream_owner(
     primary: &OwnershipNode,
     runtime_path: &Path,
     runner: &CommandRunner,
+    roots: &detect::ManagerRoots,
 ) -> Option<UpstreamOwner> {
     if !matches!(
         primary.kind(),
@@ -147,22 +152,13 @@ fn upstream_owner(
     }
 
     let manager = primary.id;
-    // These managers are not reliably on PATH themselves, so the manager root is
-    // recovered from the runtime path instead of a PATH lookup.
-    if manager == OwnerId::Nvm {
+    if let Some(command) = manager.root_source_command() {
         return Some(source_from_root(
             manager,
-            "nvm",
-            nvm_root(runtime_path),
+            command,
+            roots.root_for(manager, runtime_path),
             runner,
-        ));
-    }
-    if manager == OwnerId::Sdkman {
-        return Some(source_from_root(
-            manager,
-            "sdk",
-            sdkman_root(runtime_path),
-            runner,
+            roots,
         ));
     }
 
@@ -181,6 +177,7 @@ fn upstream_owner(
         &manager_resolution.path,
         &manager_resolution.real_path,
         runner,
+        roots,
     );
     Some(UpstreamOwner {
         node: source,
@@ -193,6 +190,7 @@ fn source_from_root(
     command: &str,
     root: Option<PathBuf>,
     runner: &CommandRunner,
+    roots: &detect::ManagerRoots,
 ) -> UpstreamOwner {
     let Some(root) = root else {
         return UpstreamOwner {
@@ -201,32 +199,18 @@ fn source_from_root(
         };
     };
     let real_root = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
-    let mut source = detect::detect(command, &root, &real_root, runner);
-    detect::enrich_with_manager_query_in_root(&mut source, command, &real_root, runner);
+    let mut source = detect::detect(command, &root, &real_root, runner, roots);
+    detect::enrich_with_manager_query_in_root(&mut source, command, &real_root, runner, roots);
     UpstreamOwner {
         node: source,
         path: Some(root),
     }
 }
 
-fn nvm_root(runtime_path: &Path) -> Option<PathBuf> {
-    root_before_marker(runtime_path, "/versions/node/")
-        .or_else(|| env::var_os("NVM_DIR").map(PathBuf::from))
-}
-
-fn sdkman_root(runtime_path: &Path) -> Option<PathBuf> {
-    root_before_marker(runtime_path, "/candidates/")
-        .or_else(|| env::var_os("SDKMAN_DIR").map(PathBuf::from))
-}
-
-fn root_before_marker(path: &Path, marker: &str) -> Option<PathBuf> {
-    let path = path.to_string_lossy();
-    let (root, _) = path.split_once(marker)?;
-    Some(PathBuf::from(root))
-}
-
 #[cfg(test)]
 mod tests {
+    use std::env;
+
     use super::*;
 
     #[cfg(unix)]
@@ -236,7 +220,20 @@ mod tests {
         command: &str,
         resolved: Vec<ResolvedExecutable>,
     ) -> OwnershipGraph {
-        from_resolutions(command, resolved, &CommandRunner::new())
+        from_resolutions_for_test_with_home(command, resolved, Path::new("/home/me"))
+    }
+
+    fn from_resolutions_for_test_with_home(
+        command: &str,
+        resolved: Vec<ResolvedExecutable>,
+        home: &Path,
+    ) -> OwnershipGraph {
+        from_resolutions(
+            command,
+            resolved,
+            &CommandRunner::new(),
+            &detect::ManagerRoots::for_home(home),
+        )
     }
 
     #[test]
@@ -265,12 +262,19 @@ mod tests {
 
     #[test]
     fn extracts_manager_root_from_runtime_path() {
+        let roots = detect::ManagerRoots::for_home(Path::new("/home/me"));
         assert_eq!(
-            nvm_root(Path::new("/home/me/.nvm/versions/node/v22/bin/node")),
+            roots.root_for(
+                OwnerId::Nvm,
+                Path::new("/home/me/.nvm/versions/node/v22/bin/node")
+            ),
             Some(PathBuf::from("/home/me/.nvm"))
         );
         assert_eq!(
-            sdkman_root(Path::new("/home/me/.sdkman/candidates/java/21/bin/java")),
+            roots.root_for(
+                OwnerId::Sdkman,
+                Path::new("/home/me/.sdkman/candidates/java/21/bin/java")
+            ),
             Some(PathBuf::from("/home/me/.sdkman"))
         );
     }
@@ -285,13 +289,14 @@ mod tests {
         symlink("/opt/homebrew/Cellar/nvm/0.40.3", &nvm_root).unwrap();
         let runtime = nvm_root.join("versions/node/v22.3.0/bin/node");
 
-        let graph = from_resolutions_for_test(
+        let graph = from_resolutions_for_test_with_home(
             "node",
             vec![ResolvedExecutable {
                 path: runtime.clone(),
                 real_path: runtime,
                 active: true,
             }],
+            &parent,
         );
 
         let owners = &graph.resolutions[0].owners;
@@ -321,6 +326,7 @@ mod tests {
             "sdk",
             Some(sdkman_root.clone()),
             &CommandRunner::new(),
+            &detect::ManagerRoots::for_home(Path::new("/home/me")),
         );
 
         assert_eq!(upstream.node.id, OwnerId::Mise);

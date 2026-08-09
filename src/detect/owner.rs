@@ -10,20 +10,6 @@ pub(super) struct QuerySpec<'a> {
     pub arguments: Vec<&'a str>,
 }
 
-pub(super) const PATH_MANAGER_RULES: &[(&str, OwnerId)] = &[
-    ("/.nvm/versions/", OwnerId::Nvm),
-    ("/.local/share/fnm/", OwnerId::Fnm),
-    ("/fnm_multishells/", OwnerId::Fnm),
-    ("/.volta/", OwnerId::Volta),
-    ("/.local/share/mise/", OwnerId::Mise),
-    ("/.mise/", OwnerId::Mise),
-    ("/.asdf/", OwnerId::Asdf),
-    ("/.pyenv/", OwnerId::Pyenv),
-    ("/.rbenv/", OwnerId::Rbenv),
-    ("/.sdkman/", OwnerId::Sdkman),
-    ("/.local/share/uv/python/", OwnerId::Uv),
-];
-
 impl OwnerId {
     pub(crate) const fn manager_executable(self) -> Option<&'static str> {
         match self {
@@ -36,6 +22,14 @@ impl OwnerId {
             Self::Uv => Some("uv"),
             Self::Rustup => Some("rustup"),
             Self::CargoInstall => Some("cargo"),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn root_source_command(self) -> Option<&'static str> {
+        match self {
+            Self::Nvm => Some("nvm"),
+            Self::Sdkman => Some("sdk"),
             _ => None,
         }
     }
@@ -54,7 +48,7 @@ impl OwnerId {
         Some(QuerySpec { program, arguments })
     }
 
-    pub(super) fn tool_for_paths(self, paths: &[String]) -> Option<String> {
+    pub(super) fn tool_for_relative_path(self, path: &Path) -> Option<String> {
         let fixed = match self {
             Self::Nvm | Self::Fnm => Some("node"),
             Self::Pyenv | Self::Uv => Some("python"),
@@ -65,53 +59,31 @@ impl OwnerId {
             return Some(tool.into());
         }
 
-        let markers: &[&str] = match self {
-            Self::Volta => &["/.volta/tools/image/"],
-            Self::Mise => &["/.local/share/mise/installs/", "/.mise/installs/"],
-            Self::Asdf => &["/.asdf/installs/"],
-            Self::Sdkman => &["/.sdkman/candidates/"],
-            _ => &[],
+        let parts = path_parts(path);
+        let index = match self {
+            Self::Volta if parts.starts_with(&["tools", "image"]) => 2,
+            Self::Mise | Self::Asdf if parts.first() == Some(&"installs") => 1,
+            Self::Sdkman if parts.first() == Some(&"candidates") => 1,
+            _ => return None,
         };
-        paths.iter().find_map(|path| {
-            markers.iter().find_map(|marker| {
-                path.split_once(marker)
-                    .and_then(|(_, remainder)| remainder.split('/').next())
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_owned)
-            })
-        })
+        parts.get(index).map(|tool| (*tool).to_owned())
     }
 
-    pub(super) fn version_for_paths(self, paths: &[String]) -> Option<String> {
-        let markers: &[&str] = match self {
-            Self::Nvm => &["/.nvm/versions/node/"],
-            Self::Fnm => &["/node-versions/"],
-            Self::Volta => &["/.volta/tools/image/node/"],
-            Self::Mise => &["/.local/share/mise/installs/", "/.mise/installs/"],
-            Self::Asdf => &["/.asdf/installs/"],
-            Self::Pyenv => &["/.pyenv/versions/"],
-            Self::Rbenv => &["/.rbenv/versions/"],
-            Self::Sdkman => &["/.sdkman/candidates/"],
-            Self::Uv => &["/.local/share/uv/python/"],
-            _ => &[],
+    pub(super) fn version_for_relative_path(self, path: &Path) -> Option<String> {
+        let parts = path_parts(path);
+        let index = match self {
+            Self::Nvm if parts.starts_with(&["versions", "node"]) => 2,
+            Self::Fnm if parts.first() == Some(&"node-versions") => 1,
+            Self::Volta if parts.starts_with(&["tools", "image", "node"]) => 3,
+            Self::Mise | Self::Asdf if parts.first() == Some(&"installs") => 2,
+            Self::Pyenv | Self::Rbenv if parts.first() == Some(&"versions") => 1,
+            Self::Sdkman if parts.first() == Some(&"candidates") => 2,
+            Self::Uv => 0,
+            _ => return None,
         };
-        for path in paths {
-            for marker in markers {
-                let Some((_, remainder)) = path.split_once(marker) else {
-                    continue;
-                };
-                let parts: Vec<_> = remainder.split('/').collect();
-                let candidate = if matches!(self, Self::Mise | Self::Asdf | Self::Sdkman) {
-                    parts.get(1)
-                } else {
-                    parts.first()
-                };
-                if let Some(version) = candidate.filter(|value| !value.is_empty()) {
-                    return Some(version.trim_start_matches('v').to_owned());
-                }
-            }
-        }
-        None
+        parts
+            .get(index)
+            .map(|version| version.trim_start_matches('v').to_owned())
     }
 
     pub(super) fn actions(
@@ -282,6 +254,10 @@ impl OwnerId {
             },
         }
     }
+}
+
+fn path_parts(path: &Path) -> Vec<&str> {
+    path.iter().filter_map(|part| part.to_str()).collect()
 }
 
 fn package_id_from_command_context(package: &str) -> Option<&str> {
