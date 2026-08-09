@@ -4,231 +4,286 @@ use std::process::Command;
 
 use crate::model::{ActionGuide, Confidence, Evidence, OwnerKind, OwnershipNode};
 
-pub fn detect(command: &str, path: &Path, real_path: &Path) -> OwnershipNode {
-    let link_target = immediate_link_target(path);
-    let mut candidate_paths = vec![path.to_path_buf(), real_path.to_path_buf()];
-    if let Some(target) = &link_target {
-        candidate_paths.push(target.clone());
-    }
-    let paths: Vec<_> = candidate_paths
-        .iter()
-        .map(|candidate| candidate.to_string_lossy().into_owned())
-        .collect();
-    let path_evidence = || path_evidence(path, real_path, link_target.as_deref());
+mod owner;
 
-    if paths.iter().any(|value| value.contains("/nix/store/")) {
-        let package = nix_store_name(&paths);
-        return owner(
-            "Nix",
-            OwnerKind::PackageManager,
-            Confidence::Confirmed,
-            package.clone(),
-            None,
-            path_evidence(),
-            actions("Nix", command, package.as_deref(), None, real_path),
-        );
-    }
+pub(crate) use owner::OwnerId;
+use owner::PATH_MANAGER_RULES;
 
-    if let Some((package, version)) = cellar_package(&paths) {
-        let guide = actions(
-            "Homebrew",
+type Detector = for<'a> fn(&DetectionContext<'a>) -> Option<OwnershipNode>;
+
+// Order is semantic: the first detector with sufficient evidence owns the result.
+const DETECTORS: &[Detector] = &[
+    detect_nix,
+    detect_homebrew,
+    detect_path_manager,
+    detect_cargo_home,
+    detect_pnpm_home,
+    detect_deno_installer,
+    detect_bun_installer,
+    #[cfg(target_os = "macos")]
+    detect_macos_receipt,
+    #[cfg(target_os = "macos")]
+    detect_python_org_installer,
+    #[cfg(target_os = "linux")]
+    detect_linux_package,
+    detect_operating_system,
+    detect_macports,
+];
+
+struct DetectionContext<'a> {
+    command: &'a str,
+    path: &'a Path,
+    real_path: &'a Path,
+    link_target: Option<PathBuf>,
+    paths: Vec<String>,
+}
+
+impl<'a> DetectionContext<'a> {
+    fn new(command: &'a str, path: &'a Path, real_path: &'a Path) -> Self {
+        let link_target = immediate_link_target(path);
+        let mut candidate_paths = vec![path.to_path_buf(), real_path.to_path_buf()];
+        if let Some(target) = &link_target {
+            candidate_paths.push(target.clone());
+        }
+        let paths = candidate_paths
+            .iter()
+            .map(|candidate| candidate.to_string_lossy().into_owned())
+            .collect();
+        Self {
             command,
-            Some(&package),
-            Some(&version),
+            path,
             real_path,
-        );
-        return owner(
-            "Homebrew",
-            OwnerKind::PackageManager,
-            Confidence::Confirmed,
-            Some(package),
-            Some(version),
-            path_evidence(),
-            guide,
-        );
-    }
-
-    let path_managers = [
-        ("/.nvm/versions/", "nvm"),
-        ("/.local/share/fnm/", "fnm"),
-        ("/fnm_multishells/", "fnm"),
-        ("/.volta/", "Volta"),
-        ("/.local/share/mise/", "mise"),
-        ("/.mise/", "mise"),
-        ("/.asdf/", "asdf"),
-        ("/.pyenv/", "pyenv"),
-        ("/.rbenv/", "rbenv"),
-        ("/.sdkman/", "SDKMAN!"),
-        ("/.local/share/uv/python/", "uv"),
-    ];
-    for (marker, manager) in path_managers {
-        if paths.iter().any(|value| value.contains(marker)) {
-            let package = tool_for_manager(manager, &paths);
-            let version = version_for_manager(manager, &paths);
-            return owner(
-                manager,
-                OwnerKind::VersionManager,
-                Confidence::Confirmed,
-                package.clone(),
-                version.clone(),
-                path_evidence(),
-                actions(
-                    manager,
-                    command,
-                    package.as_deref(),
-                    version.as_deref(),
-                    real_path,
-                ),
-            );
+            link_target,
+            paths,
         }
     }
 
-    if paths.iter().any(|value| value.contains("/.cargo/bin/")) {
-        let (manager, kind) = if matches!(
-            command,
-            "cargo" | "rustc" | "rustdoc" | "rustfmt" | "clippy-driver"
-        ) {
-            ("rustup", OwnerKind::VersionManager)
-        } else if command == "rustup" {
-            ("rustup installer", OwnerKind::ToolInstaller)
-        } else {
-            ("cargo install", OwnerKind::ToolInstaller)
-        };
-        let confidence = if manager == "rustup" && real_path.ends_with("rustup") {
-            Confidence::Confirmed
-        } else {
-            Confidence::Probable
-        };
-        return owner(
-            manager,
-            kind,
+    fn contains(&self, marker: &str) -> bool {
+        self.paths.iter().any(|path| path.contains(marker))
+    }
+
+    fn starts_with_any(&self, prefixes: &[&str]) -> bool {
+        self.paths
+            .iter()
+            .any(|path| prefixes.iter().any(|prefix| path.starts_with(prefix)))
+    }
+
+    fn evidence(&self) -> Vec<Evidence> {
+        path_evidence(self.path, self.real_path, self.link_target.as_deref())
+    }
+
+    fn owner(
+        &self,
+        id: OwnerId,
+        confidence: Confidence,
+        package: Option<String>,
+        version: Option<String>,
+        evidence: Vec<Evidence>,
+    ) -> OwnershipNode {
+        let actions = id.actions(
+            self.command,
+            package.as_deref(),
+            version.as_deref(),
+            self.real_path,
+        );
+        owner(
+            id.name(),
+            id.kind(),
             confidence,
-            None,
-            None,
-            path_evidence(),
-            actions(manager, command, None, None, real_path),
-        );
+            package,
+            version,
+            evidence,
+            actions,
+        )
     }
+}
 
-    if paths
+pub fn detect(command: &str, path: &Path, real_path: &Path) -> OwnershipNode {
+    let context = DetectionContext::new(command, path, real_path);
+    DETECTORS
         .iter()
-        .any(|value| value.contains("/Library/pnpm/") || value.contains("/.local/share/pnpm/"))
-    {
-        return owner(
-            "pnpm home",
-            OwnerKind::ToolInstaller,
+        .find_map(|detector| detector(&context))
+        .unwrap_or_else(|| detect_unconfirmed(&context))
+}
+
+fn detect_nix(context: &DetectionContext<'_>) -> Option<OwnershipNode> {
+    context.contains("/nix/store/").then_some(())?;
+    let package = nix_store_name(&context.paths);
+    Some(context.owner(
+        OwnerId::Nix,
+        Confidence::Confirmed,
+        package,
+        None,
+        context.evidence(),
+    ))
+}
+
+fn detect_homebrew(context: &DetectionContext<'_>) -> Option<OwnershipNode> {
+    let (package, version) = cellar_package(&context.paths)?;
+    Some(context.owner(
+        OwnerId::Homebrew,
+        Confidence::Confirmed,
+        Some(package),
+        Some(version),
+        context.evidence(),
+    ))
+}
+
+fn detect_path_manager(context: &DetectionContext<'_>) -> Option<OwnershipNode> {
+    let id = PATH_MANAGER_RULES
+        .iter()
+        .find(|(marker, _)| context.contains(marker))
+        .map(|(_, id)| *id)?;
+    let package = id.tool_for_paths(&context.paths);
+    let version = id.version_for_paths(&context.paths);
+    Some(context.owner(
+        id,
+        Confidence::Confirmed,
+        package,
+        version,
+        context.evidence(),
+    ))
+}
+
+fn detect_cargo_home(context: &DetectionContext<'_>) -> Option<OwnershipNode> {
+    context.contains("/.cargo/bin/").then_some(())?;
+    let id = if matches!(
+        context.command,
+        "cargo" | "rustc" | "rustdoc" | "rustfmt" | "clippy-driver"
+    ) {
+        OwnerId::Rustup
+    } else if context.command == "rustup" {
+        OwnerId::RustupInstaller
+    } else {
+        OwnerId::CargoInstall
+    };
+    let confidence = if id == OwnerId::Rustup && context.real_path.ends_with("rustup") {
+        Confidence::Confirmed
+    } else {
+        Confidence::Probable
+    };
+    Some(context.owner(id, confidence, None, None, context.evidence()))
+}
+
+fn detect_pnpm_home(context: &DetectionContext<'_>) -> Option<OwnershipNode> {
+    (context.contains("/Library/pnpm/") || context.contains("/.local/share/pnpm/")).then(|| {
+        context.owner(
+            OwnerId::PnpmHome,
             Confidence::Probable,
             None,
             None,
-            path_evidence(),
-            actions("pnpm home", command, None, None, real_path),
-        );
-    }
+            context.evidence(),
+        )
+    })
+}
 
-    if paths.iter().any(|value| value.contains("/.deno/")) {
-        return owner(
-            "Deno installer",
-            OwnerKind::ToolInstaller,
+fn detect_deno_installer(context: &DetectionContext<'_>) -> Option<OwnershipNode> {
+    context.contains("/.deno/").then(|| {
+        context.owner(
+            OwnerId::DenoInstaller,
             Confidence::Confirmed,
             None,
             None,
-            path_evidence(),
-            actions("Deno installer", command, None, None, real_path),
-        );
-    }
+            context.evidence(),
+        )
+    })
+}
 
-    if paths.iter().any(|value| value.contains("/.bun/")) {
-        return owner(
-            "Bun installer",
-            OwnerKind::ToolInstaller,
+fn detect_bun_installer(context: &DetectionContext<'_>) -> Option<OwnershipNode> {
+    context.contains("/.bun/").then(|| {
+        context.owner(
+            OwnerId::BunInstaller,
             Confidence::Confirmed,
             None,
             None,
-            path_evidence(),
-            actions("Bun installer", command, None, None, real_path),
-        );
-    }
+            context.evidence(),
+        )
+    })
+}
 
-    #[cfg(target_os = "macos")]
-    if let Some(receipt) =
-        macos_receipt(command, real_path).or_else(|| macos_receipt(command, path))
-    {
-        return receipt;
-    }
+#[cfg(target_os = "macos")]
+fn detect_macos_receipt(context: &DetectionContext<'_>) -> Option<OwnershipNode> {
+    macos_receipt(context.command, context.real_path)
+        .or_else(|| macos_receipt(context.command, context.path))
+}
 
-    #[cfg(target_os = "macos")]
-    if let Some(receipt) = python_org_receipt(command, &paths, path_evidence(), real_path) {
-        return receipt;
-    }
+#[cfg(target_os = "macos")]
+fn detect_python_org_installer(context: &DetectionContext<'_>) -> Option<OwnershipNode> {
+    python_org_receipt(
+        context.command,
+        &context.paths,
+        context.evidence(),
+        context.real_path,
+    )
+}
 
-    #[cfg(target_os = "linux")]
-    if let Some(package) = linux_package(command, real_path) {
-        return package;
-    }
+#[cfg(target_os = "linux")]
+fn detect_linux_package(context: &DetectionContext<'_>) -> Option<OwnershipNode> {
+    linux_package(context.command, context.real_path)
+}
 
-    if paths.iter().any(|value| {
-        value.starts_with("/usr/bin/")
-            || value.starts_with("/bin/")
-            || value.starts_with("/System/")
-    }) {
-        return owner(
-            "operating system",
-            OwnerKind::OperatingSystem,
+fn detect_operating_system(context: &DetectionContext<'_>) -> Option<OwnershipNode> {
+    context
+        .starts_with_any(&["/usr/bin/", "/bin/", "/System/"])
+        .then(|| {
+            context.owner(
+                OwnerId::OperatingSystem,
+                Confidence::Probable,
+                None,
+                None,
+                context.evidence(),
+            )
+        })
+}
+
+fn detect_macports(context: &DetectionContext<'_>) -> Option<OwnershipNode> {
+    context.starts_with_any(&["/opt/local/"]).then(|| {
+        context.owner(
+            OwnerId::MacPorts,
             Confidence::Probable,
             None,
             None,
-            path_evidence(),
-            actions("operating system", command, None, None, real_path),
-        );
-    }
+            context.evidence(),
+        )
+    })
+}
 
-    if paths.iter().any(|value| value.starts_with("/opt/local/")) {
-        return owner(
-            "MacPorts",
-            OwnerKind::PackageManager,
-            Confidence::Probable,
-            None,
-            None,
-            path_evidence(),
-            actions("MacPorts", command, None, None, real_path),
-        );
-    }
-
-    let mut evidence = path_evidence();
-    let reason = if paths.iter().any(|value| value.starts_with("/usr/local/")) {
+fn detect_unconfirmed(context: &DetectionContext<'_>) -> OwnershipNode {
+    let mut evidence = context.evidence();
+    let reason = if context.starts_with_any(&["/usr/local/"]) {
         "/usr/local can contain files from vendor installers, package managers, or manual copies; no recognized owner claimed this path"
     } else {
         "no recognized manager path, package receipt, or operating-system package query claimed this executable"
     };
     evidence.push(Evidence::new("unconfirmed", reason));
-    owner(
-        "unconfirmed owner",
-        OwnerKind::Unknown,
+    context.owner(
+        OwnerId::UnconfirmedOwner,
         Confidence::Unknown,
         None,
         None,
         evidence,
-        actions("unconfirmed owner", command, None, None, real_path),
     )
 }
 
 pub fn enrich_with_manager_query(owner: &mut OwnershipNode, command: &str, expected_path: &Path) {
-    let Some(query) = manager_query(&owner.name, command, expected_path) else {
+    let Some(id) = OwnerId::from_name(&owner.name) else {
+        return;
+    };
+    let Some(query) = manager_query(id, command, expected_path) else {
         return;
     };
     let query_paths = vec![query.result.clone()];
     if owner.package.is_none() {
-        owner.package = tool_for_manager(&owner.name, &query_paths);
+        owner.package = id.tool_for_paths(&query_paths);
     }
     if owner.version.is_none() {
-        owner.version = match owner.name.as_str() {
-            "fnm" => Some(query.result.trim_start_matches('v').to_owned()),
-            "rustup" => toolchain_from_rustup_path(&query.result),
-            _ => version_for_manager(&owner.name, &query_paths),
+        owner.version = match id {
+            OwnerId::Fnm => Some(query.result.trim_start_matches('v').to_owned()),
+            OwnerId::Rustup => toolchain_from_rustup_path(&query.result),
+            _ => id.version_for_paths(&query_paths),
         };
     }
-    owner.actions = actions(
-        &owner.name,
+    owner.actions = id.actions(
         command,
         owner.package.as_deref(),
         owner.version.as_deref(),
@@ -242,18 +297,12 @@ struct ManagerQuery {
     evidence: Evidence,
 }
 
-fn manager_query(manager: &str, command: &str, expected_path: &Path) -> Option<ManagerQuery> {
-    let (program, arguments): (&str, Vec<&str>) = match manager {
-        "mise" => ("mise", vec!["which", command]),
-        "asdf" => ("asdf", vec!["which", command]),
-        "pyenv" => ("pyenv", vec!["which", command]),
-        "rbenv" => ("rbenv", vec!["which", command]),
-        "Volta" => ("volta", vec!["which", command]),
-        "rustup" => ("rustup", vec!["which", command]),
-        "fnm" => ("fnm", vec!["current"]),
-        _ => return None,
-    };
-    let output = Command::new(program).args(&arguments).output().ok()?;
+fn manager_query(id: OwnerId, command: &str, expected_path: &Path) -> Option<ManagerQuery> {
+    let query = id.query(command)?;
+    let output = Command::new(query.program)
+        .args(&query.arguments)
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -261,8 +310,8 @@ fn manager_query(manager: &str, command: &str, expected_path: &Path) -> Option<M
     if result.is_empty() {
         return None;
     }
-    let invocation = std::iter::once(program)
-        .chain(arguments)
+    let invocation = std::iter::once(query.program)
+        .chain(query.arguments)
         .collect::<Vec<_>>()
         .join(" ");
     let relation = if Path::new(&result) == expected_path {
@@ -279,22 +328,12 @@ fn manager_query(manager: &str, command: &str, expected_path: &Path) -> Option<M
     })
 }
 
-pub fn manager_executable(manager: &str) -> Option<&'static str> {
-    match manager {
-        "fnm" => Some("fnm"),
-        "Volta" => Some("volta"),
-        "mise" => Some("mise"),
-        "asdf" => Some("asdf"),
-        "pyenv" => Some("pyenv"),
-        "rbenv" => Some("rbenv"),
-        "uv" => Some("uv"),
-        "rustup" => Some("rustup"),
-        "cargo install" => Some("cargo"),
-        _ => None,
-    }
+pub(crate) fn owner_id(owner: &OwnershipNode) -> Option<OwnerId> {
+    OwnerId::from_name(&owner.name)
 }
 
-pub fn unconfirmed_manager_source(manager: &str, path: Option<&Path>) -> OwnershipNode {
+pub(crate) fn unconfirmed_manager_source(manager: OwnerId, path: Option<&Path>) -> OwnershipNode {
+    let manager = manager.name();
     let mut evidence = Vec::new();
     if let Some(path) = path {
         evidence.push(Evidence::new(
@@ -395,269 +434,11 @@ fn nix_store_name(paths: &[String]) -> Option<String> {
     })
 }
 
-fn tool_for_manager(manager: &str, paths: &[String]) -> Option<String> {
-    let fixed = match manager {
-        "nvm" | "fnm" => Some("node"),
-        "pyenv" | "uv" => Some("python"),
-        "rbenv" => Some("ruby"),
-        _ => None,
-    };
-    if let Some(tool) = fixed {
-        return Some(tool.into());
-    }
-
-    let markers: &[&str] = match manager {
-        "Volta" => &["/.volta/tools/image/"],
-        "mise" => &["/.local/share/mise/installs/", "/.mise/installs/"],
-        "asdf" => &["/.asdf/installs/"],
-        "SDKMAN!" => &["/.sdkman/candidates/"],
-        _ => &[],
-    };
-    paths.iter().find_map(|path| {
-        markers.iter().find_map(|marker| {
-            path.split_once(marker)
-                .and_then(|(_, remainder)| remainder.split('/').next())
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-        })
-    })
-}
-
 fn toolchain_from_rustup_path(path: &str) -> Option<String> {
     path.split_once("/.rustup/toolchains/")
         .and_then(|(_, remainder)| remainder.split('/').next())
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
-}
-
-fn version_for_manager(manager: &str, paths: &[String]) -> Option<String> {
-    let markers: &[&str] = match manager {
-        "nvm" => &["/.nvm/versions/node/"],
-        "fnm" => &["/node-versions/"],
-        "Volta" => &["/.volta/tools/image/node/"],
-        "mise" => &["/.local/share/mise/installs/", "/.mise/installs/"],
-        "asdf" => &["/.asdf/installs/"],
-        "pyenv" => &["/.pyenv/versions/"],
-        "rbenv" => &["/.rbenv/versions/"],
-        "SDKMAN!" => &["/.sdkman/candidates/"],
-        "uv" => &["/.local/share/uv/python/"],
-        _ => &[],
-    };
-    for path in paths {
-        for marker in markers {
-            let Some((_, remainder)) = path.split_once(marker) else {
-                continue;
-            };
-            let parts: Vec<_> = remainder.split('/').collect();
-            let candidate = if matches!(manager, "mise" | "asdf" | "SDKMAN!") {
-                parts.get(1)
-            } else {
-                parts.first()
-            };
-            if let Some(version) = candidate.filter(|value| !value.is_empty()) {
-                return Some(version.trim_start_matches('v').to_owned());
-            }
-        }
-    }
-    None
-}
-
-fn actions(
-    manager: &str,
-    command: &str,
-    package: Option<&str>,
-    version: Option<&str>,
-    path: &Path,
-) -> ActionGuide {
-    let tool = shell_quote(package.unwrap_or(command));
-    let command = shell_quote(command);
-    let version = shell_quote(version.unwrap_or("<version>"));
-    let new_version = "<new-version>";
-    let package = shell_quote(package.unwrap_or("<package>"));
-    let path = shell_quote(&path.to_string_lossy());
-    match manager {
-        "Homebrew" => ActionGuide {
-            inspect: Some(format!("brew info {package}")),
-            update: Some(format!("brew upgrade {package}")),
-            remove: Some(format!("brew uninstall {package}")),
-            note: None,
-        },
-        "Nix" => ActionGuide {
-            inspect: Some(format!("nix-store --query --roots {path}")),
-            note: Some("Use the flake, profile, or configuration reported as a root; the store path alone does not identify a safe update/remove command.".into()),
-            ..ActionGuide::default()
-        },
-        "nvm" => ActionGuide {
-            inspect: Some("nvm current".into()),
-            update: Some(format!("nvm install {new_version}")),
-            remove: Some(format!("nvm uninstall {version}")),
-            note: Some("Switch away from the selected version before uninstalling it.".into()),
-        },
-        "fnm" => ActionGuide {
-            inspect: Some("fnm current".into()),
-            update: Some(format!("fnm install {new_version}")),
-            remove: Some(format!("fnm uninstall {version}")),
-            note: None,
-        },
-        "Volta" => ActionGuide {
-            inspect: Some(format!("volta which {command}")),
-            update: Some(format!("volta install {tool}@{new_version}")),
-            remove: Some(format!("volta uninstall {tool}")),
-            note: None,
-        },
-        "mise" => ActionGuide {
-            inspect: Some(format!("mise which {command}")),
-            update: Some(format!("mise upgrade {tool}")),
-            remove: Some(format!("mise uninstall {tool}@{version}")),
-            note: None,
-        },
-        "asdf" => ActionGuide {
-            inspect: Some(format!("asdf which {command}")),
-            update: Some(format!("asdf install {tool} {new_version}")),
-            remove: Some(format!("asdf uninstall {tool} {version}")),
-            note: None,
-        },
-        "pyenv" => ActionGuide {
-            inspect: Some(format!("pyenv which {command}")),
-            update: Some(format!("pyenv install {new_version}")),
-            remove: Some(format!("pyenv uninstall {version}")),
-            note: None,
-        },
-        "rbenv" => ActionGuide {
-            inspect: Some(format!("rbenv which {command}")),
-            update: Some(format!("rbenv install {new_version}")),
-            remove: Some(format!("rbenv uninstall {version}")),
-            note: Some("The install/uninstall subcommands require the ruby-build plugin.".into()),
-        },
-        "SDKMAN!" => ActionGuide {
-            inspect: Some("sdk current".into()),
-            update: Some(format!("sdk upgrade {tool}")),
-            remove: Some(format!("sdk uninstall {tool} {version}")),
-            note: None,
-        },
-        "uv" => ActionGuide {
-            inspect: Some("uv python list".into()),
-            update: Some(format!("uv python install {new_version}")),
-            remove: Some(format!("uv python uninstall {version}")),
-            note: None,
-        },
-        "rustup" => ActionGuide {
-            inspect: Some(format!("rustup which {command}")),
-            update: Some("rustup update".into()),
-            remove: Some(format!("rustup toolchain uninstall {version}")),
-            note: Some("Confirm the active toolchain with `rustup show active-toolchain` before removing it.".into()),
-        },
-        "rustup installer" => ActionGuide {
-            inspect: Some("rustup show".into()),
-            update: Some("rustup self update".into()),
-            remove: Some("rustup self uninstall".into()),
-            note: Some("Self-uninstall removes rustup-managed toolchains as well; review `rustup show` first.".into()),
-        },
-        "cargo install" => ActionGuide {
-            inspect: Some("cargo install --list".into()),
-            update: None,
-            remove: None,
-            note: Some(format!("Map executable {command} to its crate in `cargo install --list` before using `cargo install <crate>` or `cargo uninstall <crate>`.")),
-        },
-        "pnpm home" => ActionGuide {
-            inspect: Some("pnpm bin -g".into()),
-            update: None,
-            remove: None,
-            note: Some("Confirm whether Corepack or pnpm's standalone installer created this home before removing it.".into()),
-        },
-        "Deno installer" => ActionGuide {
-            inspect: Some("deno --version".into()),
-            update: Some("deno upgrade".into()),
-            remove: None,
-            note: Some("Use the uninstall instructions for the installer that created DENO_INSTALL; no removal command is inferred from the path alone.".into()),
-        },
-        "Bun installer" => ActionGuide {
-            inspect: Some("bun --version".into()),
-            update: Some("bun upgrade".into()),
-            remove: None,
-            note: Some("Confirm BUN_INSTALL and follow Bun's uninstall instructions before deleting files.".into()),
-        },
-        "macOS Installer (.pkg)" => ActionGuide {
-            inspect: package_id_from_command_context(package.as_ref()).map(|id| format!("pkgutil --pkg-info {id}")),
-            note: Some("Update by installing a newer package from the same vendor. macOS receipts do not define a generic safe uninstall command; follow the vendor's uninstall instructions.".into()),
-            ..ActionGuide::default()
-        },
-        "python.org macOS installer" => ActionGuide {
-            inspect: Some(format!("pkgutil --pkg-info {package}")),
-            note: Some("Update with a newer python.org installer. Follow python.org's macOS uninstall guidance rather than deleting framework files blindly.".into()),
-            ..ActionGuide::default()
-        },
-        "MacPorts" => ActionGuide {
-            inspect: Some(format!("port provides {path}")),
-            note: Some("Resolve the owning port first, then use `port upgrade <port>` or `port uninstall <port>`.".into()),
-            ..ActionGuide::default()
-        },
-        "dpkg" => ActionGuide {
-            inspect: Some(format!("dpkg-query -S {path}")),
-            update: Some(format!("apt install --only-upgrade {package}")),
-            remove: Some(format!("apt remove {package}")),
-            note: None,
-        },
-        "RPM" => ActionGuide {
-            inspect: Some(format!("rpm -qf {path}")),
-            note: Some("Use the system's RPM frontend (for example dnf or zypper) with the reported package; rpm ownership alone does not identify the frontend.".into()),
-            ..ActionGuide::default()
-        },
-        "pacman" => ActionGuide {
-            inspect: Some(format!("pacman -Qo {path}")),
-            update: Some(format!("pacman -S {package}")),
-            remove: Some(format!("pacman -Rns {package}")),
-            note: None,
-        },
-        "apk" => ActionGuide {
-            inspect: Some(format!("apk info -W {path}")),
-            update: Some(format!("apk upgrade {package}")),
-            remove: Some(format!("apk del {package}")),
-            note: None,
-        },
-        "operating system" => ActionGuide {
-            note: Some("Update this runtime through operating-system updates. Removing an OS-provided runtime is not recommended by this tool.".into()),
-            ..ActionGuide::default()
-        },
-        _ => ActionGuide {
-            inspect: unknown_inspect_command(&path),
-            note: Some("Ownership is unconfirmed. Do not update or remove this file until a receipt, package record, or installer is identified.".into()),
-            ..ActionGuide::default()
-        },
-    }
-}
-
-fn package_id_from_command_context(package: &str) -> Option<&str> {
-    (package != "<package>").then_some(package)
-}
-
-#[cfg(target_os = "macos")]
-fn unknown_inspect_command(path: &str) -> Option<String> {
-    Some(format!("pkgutil --file-info {path}"))
-}
-
-#[cfg(target_os = "linux")]
-fn unknown_inspect_command(path: &str) -> Option<String> {
-    Some(format!(
-        "dpkg-query -S {path}  # also try rpm -qf, pacman -Qo, or apk info -W"
-    ))
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn unknown_inspect_command(_path: &str) -> Option<String> {
-    None
-}
-
-fn shell_quote(value: &str) -> String {
-    if !value.is_empty()
-        && value
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || "-._@/+<>".contains(character))
-    {
-        value.into()
-    } else {
-        format!("'{}'", value.replace('\'', "'\\''"))
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -687,16 +468,11 @@ fn python_org_receipt(
         "pkgutil",
         format!("matching Python framework receipt {package} is installed"),
     ));
-    let guide = actions(
-        "python.org macOS installer",
-        command,
-        Some(&package),
-        Some(version),
-        real_path,
-    );
+    let id = OwnerId::PythonOrgInstaller;
+    let guide = id.actions(command, Some(&package), Some(version), real_path);
     Some(owner(
-        "python.org macOS installer",
-        OwnerKind::Installer,
+        id.name(),
+        id.kind(),
         Confidence::Probable,
         Some(package),
         Some(version.into()),
@@ -725,16 +501,11 @@ fn macos_receipt(command: &str, path: &Path) -> Option<OwnershipNode> {
             format!("receipt records version {version}"),
         ));
     }
-    let guide = actions(
-        "macOS Installer (.pkg)",
-        command,
-        Some(&package),
-        version.as_deref(),
-        path,
-    );
+    let id = OwnerId::MacosInstaller;
+    let guide = id.actions(command, Some(&package), version.as_deref(), path);
     Some(owner(
-        "macOS Installer (.pkg)",
-        OwnerKind::Installer,
+        id.name(),
+        id.kind(),
         Confidence::Confirmed,
         Some(package),
         version,
@@ -755,13 +526,13 @@ fn field(text: &str, prefix: &str) -> Option<String> {
 #[cfg(target_os = "linux")]
 fn linux_package(command: &str, path: &Path) -> Option<OwnershipNode> {
     let path_text = path.to_str()?;
-    let queries: [(&str, &[&str], &str); 4] = [
-        ("dpkg-query", &["-S"], "dpkg"),
-        ("rpm", &["-qf"], "RPM"),
-        ("pacman", &["-Qo"], "pacman"),
-        ("apk", &["info", "-W"], "apk"),
+    let queries: [(&str, &[&str], OwnerId); 4] = [
+        ("dpkg-query", &["-S"], OwnerId::Dpkg),
+        ("rpm", &["-qf"], OwnerId::Rpm),
+        ("pacman", &["-Qo"], OwnerId::Pacman),
+        ("apk", &["info", "-W"], OwnerId::Apk),
     ];
-    for (program, arguments, manager) in queries {
+    for (program, arguments, id) in queries {
         let Ok(output) = Command::new(program)
             .args(arguments)
             .arg(path_text)
@@ -778,7 +549,7 @@ fn linux_package(command: &str, path: &Path) -> Option<OwnershipNode> {
             .map(str::trim)
             .filter(|value| !value.is_empty())?
             .to_owned();
-        let package = if manager == "dpkg" {
+        let package = if id == OwnerId::Dpkg {
             raw.rsplit_once(": ")
                 .map(|(package, _)| package)
                 .unwrap_or(&raw)
@@ -787,8 +558,8 @@ fn linux_package(command: &str, path: &Path) -> Option<OwnershipNode> {
             raw.clone()
         };
         return Some(owner(
-            manager,
-            OwnerKind::PackageManager,
+            id.name(),
+            id.kind(),
             Confidence::Confirmed,
             Some(package.clone()),
             None,
@@ -796,7 +567,7 @@ fn linux_package(command: &str, path: &Path) -> Option<OwnershipNode> {
                 "package query",
                 format!("`{program}` reports: {raw}"),
             )],
-            actions(manager, command, Some(&package), None, path),
+            id.actions(command, Some(&package), None, path),
         ));
     }
     None
@@ -1080,6 +851,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn preserves_detector_priority_across_candidate_paths() {
+        let path = Path::new("/home/me/.nvm/versions/node/v22.3.0/bin/node");
+        let real = Path::new("/opt/homebrew/Cellar/node/24.1.0/bin/node");
+
+        let result = detect("node", path, real);
+
+        assert_eq!(result.name, "Homebrew");
+        assert_eq!(result.package.as_deref(), Some("node"));
+        assert_eq!(result.version.as_deref(), Some("24.1.0"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn detects_homebrew_from_direct_link_before_final_resolution() {
@@ -1119,8 +902,8 @@ mod tests {
 
     #[test]
     fn quotes_unsafe_action_arguments() {
-        assert_eq!(shell_quote("safe@1.2"), "safe@1.2");
-        assert_eq!(shell_quote("a b'c"), "'a b'\\''c'");
+        assert_eq!(owner::shell_quote("safe@1.2"), "safe@1.2");
+        assert_eq!(owner::shell_quote("a b'c"), "'a b'\\''c'");
     }
 
     #[test]
