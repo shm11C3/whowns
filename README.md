@@ -1,5 +1,10 @@
 # whowns
 
+[![CI](https://github.com/shm11C3/whowns/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/shm11C3/whowns/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/shm11C3/whowns?sort=semver)](https://github.com/shm11C3/whowns/releases/latest)
+[![Platforms: macOS and Linux](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-blue)](#current-boundaries)
+[![License: MIT](https://img.shields.io/github/license/shm11C3/whowns)](LICENSE)
+
 [Japanese](README.ja.md)
 
 `whowns` answers a deceptively simple question: "What installed and manages this command?"
