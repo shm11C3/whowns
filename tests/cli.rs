@@ -122,9 +122,13 @@ fn resolves_more_than_two_ownership_nodes_in_nearest_first_order() {
     symlink(&managed_nvm, sandbox.path(".nvm")).unwrap();
     let selected_bin = sandbox.path(".nvm/versions/node/v22.3.0/bin");
 
+    let real_managed_nvm = fs::canonicalize(&managed_nvm).unwrap();
     let homebrew_mise = sandbox.executable(
         "homebrew/Cellar/mise/2026.8.0/bin/mise",
-        "#!/bin/sh\nexit 0\n",
+        &format!(
+            "#!/bin/sh\nif [ \"$1\" = \"which\" ] && [ \"$2\" = \"nvm\" ]; then\n  printf '%s\\n' '{}'\nfi\n",
+            real_managed_nvm.display()
+        ),
     );
     let tools = sandbox.path("tools");
     fs::create_dir_all(&tools).unwrap();
@@ -135,7 +139,13 @@ fn resolves_more_than_two_ownership_nodes_in_nearest_first_order() {
 
     assert!(output.status.success());
     assert!(
-        stdout.contains("ownership: node → nvm [probable] → mise [probable] → Homebrew [probable]"),
+        stdout
+            .contains("ownership: node → nvm [probable] → mise [confirmed] → Homebrew [probable]"),
+        "output: {stdout}"
+    );
+    assert!(
+        stdout.contains("`mise which nvm` returned")
+            && stdout.contains("and it matches the resolved executable"),
         "output: {stdout}"
     );
     assert!(stderr(&output).is_empty());
@@ -208,7 +218,7 @@ fn stops_at_the_maximum_depth_with_visible_evidence() {
         stdout.contains("ownership resolution reached the safety limit of 8 owners"),
         "output: {stdout}"
     );
-    assert!(stderr(&output).is_empty());
+    assert!(stderr(&output).is_empty(), "stderr: {}", stderr(&output));
 }
 
 #[test]

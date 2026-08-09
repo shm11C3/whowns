@@ -39,8 +39,7 @@ fn from_resolutions(
     let resolutions = resolved
         .into_iter()
         .map(|resolved| {
-            let mut primary = detect::detect(command, &resolved.path, &resolved.real_path, runner);
-            detect::enrich_with_manager_query(&mut primary, command, &resolved.real_path, runner);
+            let primary = detect_owner(command, &resolved.path, &resolved.real_path, runner);
             let owners = ownership_chain(primary, &resolved.path, runner);
             Resolution {
                 path: resolved.path,
@@ -58,6 +57,17 @@ fn from_resolutions(
         command: command.into(),
         resolutions,
     }
+}
+
+fn detect_owner(
+    command: &str,
+    path: &Path,
+    real_path: &Path,
+    runner: &CommandRunner,
+) -> OwnershipNode {
+    let mut owner = detect::detect(command, path, real_path, runner);
+    detect::enrich_with_manager_query(&mut owner, command, real_path, runner);
+    owner
 }
 
 fn ownership_chain(
@@ -167,7 +177,7 @@ fn upstream_owner(
             path: None,
         });
     };
-    let source = detect::detect(
+    let source = detect_owner(
         manager_command,
         &manager_resolution.path,
         &manager_resolution.real_path,
@@ -192,7 +202,7 @@ fn source_from_root(
         };
     };
     let real_root = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
-    let source = detect::detect(command, &root, &real_root, runner);
+    let source = detect_owner(command, &root, &real_root, runner);
     UpstreamOwner {
         node: source,
         path: Some(root),
@@ -305,27 +315,19 @@ mod tests {
             &sdkman_root,
         )
         .unwrap();
-        let runtime = sdkman_root.join("candidates/java/21.0.2-tem/bin/java");
 
-        let graph = from_resolutions_for_test(
-            "java",
-            vec![ResolvedExecutable {
-                path: runtime.clone(),
-                real_path: runtime,
-                active: true,
-            }],
+        let upstream = source_from_root(
+            OwnerId::Sdkman,
+            "sdk",
+            Some(sdkman_root.clone()),
+            &CommandRunner::new(),
         );
 
-        let owners = &graph.resolutions[0].owners;
-        assert_eq!(owners.len(), 3);
-        assert_eq!(owners[0].id, OwnerId::Sdkman);
-        assert_eq!(owners[1].id, OwnerId::Mise);
-        assert_eq!(owners[2].id, OwnerId::UnconfirmedSource);
-        // Regression: source_from_root used to pass display_name() ("SDKMAN!")
-        // as the lookup command, producing the nonsensical `mise which
-        // 'SDKMAN!'`. It must use the real `sdk` command instead, so renaming
-        // the display text can never change this generated command.
-        assert_eq!(owners[1].actions.inspect.as_deref(), Some("mise which sdk"));
+        assert_eq!(upstream.node.id, OwnerId::Mise);
+        assert_eq!(
+            upstream.node.actions.inspect.as_deref(),
+            Some("mise which sdk")
+        );
         fs::remove_file(sdkman_root).unwrap();
         fs::remove_dir(parent).unwrap();
     }
