@@ -217,6 +217,32 @@ fn confirms_a_mise_managed_runtime_via_its_which_query() {
 }
 
 #[test]
+fn skips_the_manager_query_silently_when_mise_itself_is_not_on_path() {
+    // The sandbox PATH deliberately has no `mise` executable anywhere on it,
+    // regardless of what happens to be installed on the host running this
+    // test. resolve_program("mise") must fail before any subprocess is
+    // attempted, and enrich_with_manager_query must not add evidence or fail
+    // for that.
+    let sandbox = Sandbox::new("mise-not-on-path");
+    let node = sandbox.executable(
+        ".local/share/mise/installs/node/22.3.0/bin/node",
+        "#!/bin/sh\nexit 0\n",
+    );
+    let node_bin = node.parent().unwrap().to_path_buf();
+
+    let output = sandbox.run(WHOWNS, &["node", "--explain"], &[&node_bin]);
+    let stdout = stdout(&output);
+
+    assert!(output.status.success());
+    assert!(stdout.contains("mise [confirmed]"), "output: {stdout}");
+    assert!(
+        !stdout.contains("manager query"),
+        "no manager query should have been attempted, output: {stdout}"
+    );
+    assert!(stderr(&output).is_empty());
+}
+
+#[test]
 fn a_hung_manager_query_is_killed_and_reported_instead_of_blocking() {
     let sandbox = Sandbox::new("hung-manager-query");
     let node = sandbox.executable(
@@ -271,7 +297,7 @@ fn caches_identical_manager_queries_across_runtimes_in_all_mode() {
     sandbox.executable(
         "tools/pkgutil",
         &format!(
-            "#!/bin/sh\necho called >> {}\nif [ \"$1\" = \"--file-info\" ]; then\n  printf '%s\\n' 'pkgid: com.example.mise' 'pkg-version: 1.0.0'\n  exit 0\nfi\nexit 1\n",
+            "#!/bin/sh\necho called >> '{}'\nif [ \"$1\" = \"--file-info\" ]; then\n  printf '%s\\n' 'pkgid: com.example.mise' 'pkg-version: 1.0.0'\n  exit 0\nfi\nexit 1\n",
             log.display()
         ),
     );
@@ -394,4 +420,27 @@ fn reads_apk_package_ownership() {
         "apk [confirmed]",
         "inspect: apk info -W",
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn continues_to_the_next_package_tool_when_one_reports_success_with_empty_output() {
+    // dpkg-query exits 0 (as it would with no output at all) without
+    // printing anything; that must not abort the whole detector before rpm
+    // gets a chance to answer.
+    let sandbox = Sandbox::new("empty-then-rpm");
+    let bin = sandbox.path("bin");
+    let tools = sandbox.path("tools");
+    sandbox.executable("bin/fixture-tool", "#!/bin/sh\nexit 0\n");
+    sandbox.executable("tools/dpkg-query", "#!/bin/sh\nexit 0\n");
+    sandbox.executable(
+        "tools/rpm",
+        "#!/bin/sh\nprintf '%s\\n' 'fixture-package-1.2.3-1.x86_64'\n",
+    );
+
+    let output = sandbox.run(WHOWNS, &["fixture-tool", "--explain"], &[&bin, &tools]);
+    let stdout = stdout(&output);
+
+    assert!(output.status.success());
+    assert!(stdout.contains("RPM [confirmed]"), "output: {stdout}");
 }

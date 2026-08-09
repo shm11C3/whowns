@@ -363,7 +363,13 @@ fn manager_query(
                 ),
             })
         }
-        Ok(_) => None,
+        Ok(_) => Some(ManagerQuery {
+            result: None,
+            evidence: Evidence::new(
+                "manager query",
+                format!("`{invocation}` exited without confirming ownership"),
+            ),
+        }),
     }
 }
 
@@ -569,13 +575,16 @@ fn linux_package(runner: &CommandRunner, command: &str, path: &Path) -> Option<O
         if !output.success {
             continue;
         }
-        let raw = output
+        let Some(raw) = output
             .stdout
             .lines()
             .next()
             .map(str::trim)
-            .filter(|value| !value.is_empty())?
-            .to_owned();
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+        else {
+            continue;
+        };
         let package = if id == OwnerId::Dpkg {
             raw.rsplit_once(": ")
                 .map(|(package, _)| package)
@@ -971,22 +980,14 @@ mod tests {
     }
 
     #[test]
-    fn manager_query_is_skipped_silently_when_the_manager_is_not_on_path() {
-        // No fixture manager binary exists anywhere near this path, so
-        // resolve_program("mise") fails before any subprocess is attempted;
-        // enrich_with_manager_query must not add evidence or fail for that.
-        let path =
-            Path::new("/home/me/.local/share/mise/installs/node/22.3.0/bin/whowns-fixture-node");
-        let mut result = detect_for_test("whowns-fixture-node", path, path);
-        let evidence_before = result.evidence.len();
-
-        enrich_with_manager_query(
-            &mut result,
-            "whowns-fixture-node",
-            path,
-            &CommandRunner::new(),
+    fn resolve_program_returns_none_when_the_executable_is_not_on_path() {
+        // A name this specific will never coincidentally exist on a real
+        // PATH, so this is deterministic regardless of what happens to be
+        // installed on the machine running the test (unlike a real manager
+        // name such as "mise", which may or may not actually be present).
+        assert_eq!(
+            resolve_program("whowns-fixture-program-that-does-not-exist-zzz"),
+            None
         );
-
-        assert_eq!(result.evidence.len(), evidence_before);
     }
 }

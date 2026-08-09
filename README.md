@@ -131,7 +131,7 @@ These queries run through a single bounded execution policy, not raw, unbounded 
 - Each query is killed if it does not finish within a few seconds, so a hung or slow manager cannot block a lookup or `--all`.
 - Identical queries are only ever executed once per `whowns` invocation; repeated queries across runtimes or resolutions in `--all` reuse the cached result.
 - Captured output is bounded; a manager that misbehaves and writes excessive output cannot exhaust memory.
-- A timed-out or failed query is recorded as `Evidence` on the affected owner when one exists, and otherwise printed as a `note:` line on stderr, so a degraded query stays visible instead of silently changing the result.
+- A timed-out or unstartable query is always printed as a `note:` line on stderr. A manager query — the confirmatory `which`/`current` query run after an owner is already identified — additionally records its outcome, including a non-zero exit, as `Evidence` on that owner, so a degraded confirmatory query stays visible instead of silently changing the result.
 - Queries inherit the parent process environment unmodified. Managers resolve their own data directories from variables such as `HOME`; clearing or fabricating environment state for them would make their answers wrong rather than safer.
 
 ## Installation
