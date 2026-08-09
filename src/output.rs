@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use crate::model::{ActionGuide, OwnershipGraph, OwnershipNode, Resolution};
+use crate::model::{ActionGuide, OwnershipGraph, OwnershipNode, Resolution, ResolutionStatus};
 
 pub fn print_inspect(
     graphs: &[OwnershipGraph],
@@ -13,11 +13,17 @@ pub fn print_inspect(
         }
         writeln!(out, "{}", graph.command)?;
         if graph.resolutions.is_empty() {
-            writeln!(out, "  not found in PATH")?;
+            writeln!(out, "└── ? not found in PATH")?;
             continue;
         }
-        for resolution in &graph.resolutions {
-            print_resolution(&mut out, graph, resolution, explain)?;
+        for (index, resolution) in graph.resolutions.iter().enumerate() {
+            print_resolution(
+                &mut out,
+                graph,
+                resolution,
+                explain,
+                index + 1 == graph.resolutions.len(),
+            )?;
         }
     }
     Ok(())
@@ -70,54 +76,67 @@ fn print_resolution(
     graph: &OwnershipGraph,
     resolution: &Resolution,
     explain: bool,
+    last_resolution: bool,
 ) -> io::Result<()> {
+    let status_marker = match resolution.status {
+        ResolutionStatus::Active => "●",
+        ResolutionStatus::Shadowed => "○",
+    };
     writeln!(
         out,
-        "  {}: {}",
-        resolution.status.as_str(),
-        resolution.path.display()
+        "{} {status_marker} {}",
+        connector(last_resolution),
+        resolution.status.as_str()
+    )?;
+    let prefix = child_prefix("", last_resolution);
+    write_leaf(
+        &mut out,
+        &prefix,
+        false,
+        "executable",
+        &resolution.path.to_string_lossy(),
     )?;
     if resolution.path != resolution.real_path {
-        writeln!(out, "    resolves to: {}", resolution.real_path.display())?;
+        write_leaf(
+            &mut out,
+            &prefix,
+            false,
+            "resolves to",
+            &resolution.real_path.to_string_lossy(),
+        )?;
     }
-    writeln!(
-        out,
-        "    ownership: {} -> {}",
-        graph.command,
-        owner_chain(resolution)
+
+    let primary = resolution.primary_owner();
+    let has_actions = primary.is_some_and(|owner| !action_entries(&owner.actions).is_empty());
+    let show_hint = !explain && resolution.owners.len() > 1;
+    let has_tail = explain || has_actions || show_hint;
+    write_leaf(
+        &mut out,
+        &prefix,
+        !has_tail,
+        "ownership",
+        &format!("{} → {}", graph.command, owner_chain(resolution)),
     )?;
 
     if explain {
-        for (index, owner) in resolution.owners.iter().enumerate() {
-            writeln!(
-                out,
-                "    owner[{}]: {} ({}, {})",
-                index + 1,
-                owner.display_name(),
-                owner.kind().as_str(),
-                owner.confidence.as_str()
+        print_owner_details(&mut out, &prefix, true, &resolution.owners)?;
+    } else {
+        if let Some(primary) = primary.filter(|_| has_actions) {
+            print_action_group(
+                &mut out,
+                &prefix,
+                !show_hint,
+                &format!("actions ({})", primary.name),
+                &primary.actions,
             )?;
-            if let Some(package) = &owner.package {
-                writeln!(out, "      package: {package}")?;
-            }
-            if let Some(version) = &owner.version {
-                writeln!(out, "      version: {version}")?;
-            }
-            for evidence in &owner.evidence {
-                writeln!(
-                    out,
-                    "      evidence[{}]: {}",
-                    evidence.source, evidence.detail
-                )?;
-            }
-            print_actions(&mut out, &owner.actions, "      ")?;
         }
-    } else if let Some(primary) = resolution.primary_owner() {
-        print_actions(&mut out, &primary.actions, "    ")?;
-        if resolution.owners.len() > 1 {
-            writeln!(
-                out,
-                "    hint: use --explain to see how the manager itself was installed"
+        if show_hint {
+            write_leaf(
+                &mut out,
+                &prefix,
+                true,
+                "hint",
+                "use --explain to expand ownership evidence",
             )?;
         }
     }
@@ -131,23 +150,119 @@ fn owner_chain(resolution: &Resolution) -> String {
     resolution
         .owners
         .iter()
-        .map(|owner| format!("{} [{}]", owner.display_name(), owner.confidence.as_str()))
+        .map(|owner| format!("{} [{}]", owner.name, owner.confidence.as_str()))
         .collect::<Vec<_>>()
-        .join(" -> ")
+        .join(" → ")
 }
 
-fn print_actions(mut out: impl Write, actions: &ActionGuide, indent: &str) -> io::Result<()> {
-    if let Some(inspect) = &actions.inspect {
-        writeln!(out, "{indent}inspect: {inspect}")?;
+fn connector(last: bool) -> &'static str {
+    if last { "└──" } else { "├──" }
+}
+
+fn child_prefix(prefix: &str, last: bool) -> String {
+    format!("{prefix}{}", if last { "    " } else { "│   " })
+}
+
+fn write_leaf(
+    out: &mut impl Write,
+    prefix: &str,
+    last: bool,
+    label: &str,
+    value: &str,
+) -> io::Result<()> {
+    writeln!(out, "{prefix}{} {label}: {value}", connector(last))
+}
+
+fn action_entries(actions: &ActionGuide) -> Vec<(&'static str, &str)> {
+    [
+        ("inspect", actions.inspect.as_deref()),
+        ("update", actions.update.as_deref()),
+        ("remove", actions.remove.as_deref()),
+        ("note", actions.note.as_deref()),
+    ]
+    .into_iter()
+    .filter_map(|(label, value)| value.map(|value| (label, value)))
+    .collect()
+}
+
+fn print_action_group(
+    out: &mut impl Write,
+    prefix: &str,
+    last: bool,
+    label: &str,
+    actions: &ActionGuide,
+) -> io::Result<()> {
+    writeln!(out, "{prefix}{} {label}", connector(last))?;
+    let prefix = child_prefix(prefix, last);
+    let entries = action_entries(actions);
+    for (index, (label, value)) in entries.iter().enumerate() {
+        write_leaf(out, &prefix, index + 1 == entries.len(), label, value)?;
     }
-    if let Some(update) = &actions.update {
-        writeln!(out, "{indent}update: {update}")?;
+    Ok(())
+}
+
+fn print_owner_details(
+    out: &mut impl Write,
+    prefix: &str,
+    last: bool,
+    owners: &[OwnershipNode],
+) -> io::Result<()> {
+    writeln!(out, "{prefix}{} owner details", connector(last))?;
+    let prefix = child_prefix(prefix, last);
+    for (index, owner) in owners.iter().enumerate() {
+        print_owner(out, &prefix, index + 1 == owners.len(), owner)?;
     }
-    if let Some(remove) = &actions.remove {
-        writeln!(out, "{indent}remove: {remove}")?;
+    Ok(())
+}
+
+fn print_owner(
+    out: &mut impl Write,
+    prefix: &str,
+    last: bool,
+    owner: &OwnershipNode,
+) -> io::Result<()> {
+    writeln!(
+        out,
+        "{prefix}{} {} [{}]",
+        connector(last),
+        owner.name,
+        owner.confidence.as_str()
+    )?;
+    let prefix = child_prefix(prefix, last);
+    let actions = action_entries(&owner.actions);
+    let mut remaining = 1
+        + usize::from(owner.package.is_some())
+        + usize::from(owner.version.is_some())
+        + usize::from(!owner.evidence.is_empty())
+        + usize::from(!actions.is_empty());
+
+    remaining -= 1;
+    write_leaf(out, &prefix, remaining == 0, "kind", owner.kind.as_str())?;
+    if let Some(package) = &owner.package {
+        remaining -= 1;
+        write_leaf(out, &prefix, remaining == 0, "package", package)?;
     }
-    if let Some(note) = &actions.note {
-        writeln!(out, "{indent}note: {note}")?;
+    if let Some(version) = &owner.version {
+        remaining -= 1;
+        write_leaf(out, &prefix, remaining == 0, "version", version)?;
+    }
+    if !owner.evidence.is_empty() {
+        remaining -= 1;
+        let last = remaining == 0;
+        writeln!(out, "{prefix}{} evidence", connector(last))?;
+        let evidence_prefix = child_prefix(&prefix, last);
+        for (index, evidence) in owner.evidence.iter().enumerate() {
+            write_leaf(
+                out,
+                &evidence_prefix,
+                index + 1 == owner.evidence.len(),
+                &evidence.source,
+                &evidence.detail,
+            )?;
+        }
+    }
+    if !actions.is_empty() {
+        print_action_group(out, &prefix, true, "actions", &owner.actions)?;
     }
     Ok(())
 }
@@ -207,9 +322,8 @@ fn print_resolution_json(
 
 fn print_owner_json(mut out: impl Write, owner: &OwnershipNode, last: bool) -> io::Result<()> {
     writeln!(out, "          {{")?;
-    json_string_field(&mut out, 12, "id", owner.id.as_str(), true)?;
-    json_string_field(&mut out, 12, "name", owner.display_name(), true)?;
-    json_string_field(&mut out, 12, "kind", owner.kind().as_str(), true)?;
+    json_string_field(&mut out, 12, "name", &owner.name, true)?;
+    json_string_field(&mut out, 12, "kind", owner.kind.as_str(), true)?;
     json_optional_field(&mut out, 12, "package", owner.package.as_deref(), true)?;
     json_optional_field(&mut out, 12, "version", owner.version.as_deref(), true)?;
     json_string_field(&mut out, 12, "confidence", owner.confidence.as_str(), true)?;
@@ -316,7 +430,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::model::{Confidence, OwnerId, OwnershipNode, ResolutionStatus};
+    use crate::model::{Confidence, Evidence, OwnerKind, OwnershipNode, ResolutionStatus};
 
     fn graph() -> OwnershipGraph {
         OwnershipGraph {
@@ -325,14 +439,36 @@ mod tests {
                 path: PathBuf::from("/opt/homebrew/bin/node"),
                 real_path: PathBuf::from("/opt/homebrew/Cellar/node/25/bin/node"),
                 status: ResolutionStatus::Active,
-                owners: vec![OwnershipNode {
-                    id: OwnerId::Homebrew,
-                    package: Some("node".into()),
-                    version: Some("25".into()),
-                    confidence: Confidence::Confirmed,
-                    evidence: vec![],
-                    actions: ActionGuide::default(),
-                }],
+                owners: vec![
+                    OwnershipNode {
+                        name: "nvm".into(),
+                        kind: OwnerKind::VersionManager,
+                        package: Some("node".into()),
+                        version: Some("22.3.0".into()),
+                        confidence: Confidence::Confirmed,
+                        evidence: vec![Evidence::new(
+                            "PATH",
+                            "entry uses the nvm versions directory",
+                        )],
+                        actions: ActionGuide {
+                            inspect: Some("nvm current".into()),
+                            update: Some("nvm install <new-version>".into()),
+                            ..ActionGuide::default()
+                        },
+                    },
+                    OwnershipNode {
+                        name: "Homebrew".into(),
+                        kind: OwnerKind::PackageManager,
+                        package: Some("nvm".into()),
+                        version: Some("0.40.3".into()),
+                        confidence: Confidence::Confirmed,
+                        evidence: vec![Evidence::new("symlink", "nvm root points into Cellar")],
+                        actions: ActionGuide {
+                            inspect: Some("brew info nvm".into()),
+                            ..ActionGuide::default()
+                        },
+                    },
+                ],
             }],
         }
     }
@@ -351,6 +487,48 @@ mod tests {
     }
 
     #[test]
+    fn inspect_renders_a_compact_ownership_tree() {
+        let mut output = Vec::new();
+        print_inspect(&[graph()], false, &mut output).unwrap();
+
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            concat!(
+                "node\n",
+                "└── ● active\n",
+                "    ├── executable: /opt/homebrew/bin/node\n",
+                "    ├── resolves to: /opt/homebrew/Cellar/node/25/bin/node\n",
+                "    ├── ownership: node → nvm [confirmed] → Homebrew [confirmed]\n",
+                "    ├── actions (nvm)\n",
+                "    │   ├── inspect: nvm current\n",
+                "    │   └── update: nvm install <new-version>\n",
+                "    └── hint: use --explain to expand ownership evidence\n",
+            )
+        );
+    }
+
+    #[test]
+    fn explain_expands_owner_evidence_as_tree_branches() {
+        let mut output = Vec::new();
+        print_inspect(&[graph()], true, &mut output).unwrap();
+        let output = String::from_utf8(output).unwrap();
+
+        assert!(output.contains(concat!(
+            "    └── owner details\n",
+            "        ├── nvm [confirmed]\n",
+            "        │   ├── kind: version_manager\n",
+            "        │   ├── package: node\n",
+            "        │   ├── version: 22.3.0\n",
+            "        │   ├── evidence\n",
+            "        │   │   └── PATH: entry uses the nvm versions directory\n",
+            "        │   └── actions\n",
+            "        │       ├── inspect: nvm current\n",
+            "        │       └── update: nvm install <new-version>\n",
+            "        └── Homebrew [confirmed]",
+        )));
+    }
+
+    #[test]
     fn json_contains_common_graph_fields() {
         let mut json = Vec::new();
         print_json(&[graph()], &mut json).unwrap();
@@ -358,40 +536,6 @@ mod tests {
         assert!(json.contains("\"resolutions\""));
         assert!(json.contains("\"ownership_chain\""));
         assert!(json.contains("\"action_guide\""));
-    }
-
-    #[test]
-    fn json_separates_the_stable_owner_id_from_the_display_name() {
-        let mut json = Vec::new();
-        print_json(&[graph()], &mut json).unwrap();
-        let json = String::from_utf8(json).unwrap();
-        assert!(json.contains("\"id\": \"homebrew\""));
-        assert!(json.contains("\"name\": \"Homebrew\""));
-    }
-
-    #[test]
-    fn text_output_renders_display_names_not_stable_ids() {
-        let graph = OwnershipGraph {
-            command: "java".into(),
-            resolutions: vec![Resolution {
-                path: PathBuf::from("/home/me/.sdkman/candidates/java/21/bin/java"),
-                real_path: PathBuf::from("/home/me/.sdkman/candidates/java/21/bin/java"),
-                status: ResolutionStatus::Active,
-                owners: vec![OwnershipNode {
-                    id: OwnerId::Sdkman,
-                    package: Some("java".into()),
-                    version: Some("21".into()),
-                    confidence: Confidence::Confirmed,
-                    evidence: vec![],
-                    actions: ActionGuide::default(),
-                }],
-            }],
-        };
-        let mut inspect = Vec::new();
-        print_inspect(&[graph], true, &mut inspect).unwrap();
-        let inspect = String::from_utf8(inspect).unwrap();
-        assert!(inspect.contains("SDKMAN! [confirmed]"));
-        assert!(inspect.contains("owner[1]: SDKMAN! (version_manager, confirmed)"));
     }
 
     #[test]

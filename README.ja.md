@@ -16,24 +16,39 @@
 
 Rust の単体バイナリなので、利用者側に Node.js やPythonなどの追加ランタイムは不要です。
 
+## 目次
+
+- [個別逆引き](#個別逆引き)
+- [一覧表示](#一覧表示)
+- [JSON](#json)
+- [確信度](#確信度)
+- [検出できる管理元](#検出できる管理元)
+- [インストール](#インストール)
+- [開発用ビルド](#開発用ビルド)
+- [現在の境界](#現在の境界)
+
 ## 個別逆引き
 
 ```console
 $ whowns node
 node
-  active: /usr/local/bin/node
-    ownership: node -> macOS Installer (.pkg) [confirmed]
-    inspect: pkgutil --pkg-info org.nodejs.node.pkg
-    note: Update by installing a newer package from the same vendor. ...
-  shadowed: /opt/homebrew/bin/node
-    resolves to: /opt/homebrew/Cellar/node/25.6.1_1/bin/node
-    ownership: node -> Homebrew [confirmed]
-    inspect: brew info node
-    update: brew upgrade node
-    remove: brew uninstall node
+├── ● active
+│   ├── executable: /usr/local/bin/node
+│   ├── ownership: node → macOS Installer (.pkg) [confirmed]
+│   └── actions (macOS Installer (.pkg))
+│       ├── inspect: pkgutil --pkg-info org.nodejs.node.pkg
+│       └── note: Update by installing a newer package from the same vendor. ...
+└── ○ shadowed
+    ├── executable: /opt/homebrew/bin/node
+    ├── resolves to: /opt/homebrew/Cellar/node/25.6.1_1/bin/node
+    ├── ownership: node → Homebrew [confirmed]
+    └── actions (Homebrew)
+        ├── inspect: brew info node
+        ├── update: brew upgrade node
+        └── remove: brew uninstall node
 ```
 
-`active` は現在実行されるもの、`shadowed` はインストール済みだが PATH の優先順位で隠れているものです。更新・削除コマンドは案内するだけで、自動実行しません。
+terminal treeによって、実体、所有関係、操作案内のつながりを視覚的に追えます。`active` は現在実行されるもの、`shadowed` はインストール済みだが PATH の優先順位で隠れているものです。更新・削除コマンドは案内するだけで、自動実行しません。
 
 詳細な検出根拠と多段所有関係は `--explain` で表示します。
 
@@ -45,8 +60,8 @@ whowns rustc cargo --explain
 たとえば環境から確認できる場合、次のような所有チェーンになります。
 
 ```text
-node -> nvm [confirmed] -> Homebrew [confirmed]
-rustc -> rustup [confirmed] -> rustup installer [probable]
+node → nvm [confirmed] → Homebrew [confirmed]
+rustc → rustup [confirmed] → rustup installer [probable]
 ```
 
 ## 一覧表示
@@ -76,7 +91,6 @@ whowns --all --json
 OwnershipGraph (command)
 └── Resolution[] (active / shadowed, path, real_path)
     └── OwnershipNode[] (近い管理元から順番に並ぶ)
-        ├── id (安定 ID) / name (表示名)
         ├── kind
         ├── package / version
         ├── Confidence
@@ -86,7 +100,6 @@ OwnershipGraph (command)
 
 - `Resolution`: PATH 上の有効な実体と隠れている実体
 - `OwnershipNode`: `runtime -> version manager -> installation source` の順序付き所有関係
-- `id`: `homebrew`、`sdkman`、`macos_installer` のような安定した機械可読の所有者 ID。`name` は表示用テキストであり、変更しても `id` には影響しない
 - `Evidence`: PATH、symlink、filesystem、`pkgutil`、パッケージ照会、管理ツール照会などの根拠
 - `Confidence`: `confirmed`、`probable`、`unknown`
 - `ActionGuide`: 確認・更新・削除の候補コマンドと注意事項
@@ -113,18 +126,31 @@ OwnershipGraph (command)
 
 ## インストール
 
-[GitHub Releases](https://github.com/shm11C3/whowns/releases)を正式なバイナリ配布経路とします。OSとCPUに合うarchiveをダウンロードして展開し、同梱のinstallerを実行します。
+[GitHub Releases](https://github.com/shm11C3/whowns/releases)を正式なバイナリ配布経路とします。推奨installerはOSとCPUを判定し、対応するarchiveをダウンロードして、Releaseのchecksum manifestと照合してから単体バイナリをインストールします。
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/shm11C3/whowns/releases/latest/download/install.sh | sh
+```
+
+デフォルトでは`$HOME/.local/bin/whowns`と、短縮aliasの`$HOME/.local/bin/wio`を作成します。installerのオプションは`sh -s --`の後ろへ渡します。
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/shm11C3/whowns/releases/latest/download/install.sh \
+  | sh -s -- --no-alias
+
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/shm11C3/whowns/releases/latest/download/install.sh \
+  | sh -s -- --bin-dir /usr/local/bin
+```
+
+Release archiveを先にダウンロードして、内容を確認してからインストールする方法も利用できます。
 
 ```sh
 tar -xzf whowns-v0.1.0-aarch64-apple-darwin.tar.gz
 cd whowns-v0.1.0-aarch64-apple-darwin
 ./install.sh
-```
-
-デフォルトでは `$HOME/.local/bin/whowns` に単体バイナリをインストールします。
-
-```sh
-./install.sh --bin-dir /usr/local/bin
 ```
 
 checksum、artifact attestation、対応architecture、公開手順は [docs/RELEASING.md](docs/RELEASING.md) に記載しています。

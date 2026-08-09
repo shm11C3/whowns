@@ -15,24 +15,39 @@ The name compresses `who owns` into six characters. The tool focuses on explaini
 
 `whowns` is a standalone Rust binary. Users do not need Node.js, Python, or another runtime to run it.
 
+## Table of contents
+
+- [Inspect a command](#inspect-a-command)
+- [List common runtimes](#list-common-runtimes)
+- [JSON](#json)
+- [Confidence](#confidence)
+- [Recognized owners](#recognized-owners)
+- [Installation](#installation)
+- [Development](#development)
+- [Current boundaries](#current-boundaries)
+
 ## Inspect a command
 
 ```console
 $ whowns node
 node
-  active: /usr/local/bin/node
-    ownership: node -> macOS Installer (.pkg) [confirmed]
-    inspect: pkgutil --pkg-info org.nodejs.node.pkg
-    note: Update by installing a newer package from the same vendor. ...
-  shadowed: /opt/homebrew/bin/node
-    resolves to: /opt/homebrew/Cellar/node/25.6.1_1/bin/node
-    ownership: node -> Homebrew [confirmed]
-    inspect: brew info node
-    update: brew upgrade node
-    remove: brew uninstall node
+├── ● active
+│   ├── executable: /usr/local/bin/node
+│   ├── ownership: node → macOS Installer (.pkg) [confirmed]
+│   └── actions (macOS Installer (.pkg))
+│       ├── inspect: pkgutil --pkg-info org.nodejs.node.pkg
+│       └── note: Update by installing a newer package from the same vendor. ...
+└── ○ shadowed
+    ├── executable: /opt/homebrew/bin/node
+    ├── resolves to: /opt/homebrew/Cellar/node/25.6.1_1/bin/node
+    ├── ownership: node → Homebrew [confirmed]
+    └── actions (Homebrew)
+        ├── inspect: brew info node
+        ├── update: brew upgrade node
+        └── remove: brew uninstall node
 ```
 
-`active` is the executable selected by `PATH`. `shadowed` executables are installed but lose because they appear later in `PATH`. Action guides are suggestions only; `whowns` never runs update or removal commands.
+The terminal tree keeps resolutions, ownership, and suggested actions visually connected. `active` is the executable selected by `PATH`. `shadowed` executables are installed but lose because they appear later in `PATH`. Action guides are suggestions only; `whowns` never runs update or removal commands.
 
 Use `--explain` to show detailed evidence and every ownership layer.
 
@@ -44,8 +59,8 @@ whowns rustc cargo --explain
 When the environment provides enough evidence, an ownership chain can look like this:
 
 ```text
-node -> nvm [confirmed] -> Homebrew [confirmed]
-rustc -> rustup [confirmed] -> rustup installer [probable]
+node → nvm [confirmed] → Homebrew [confirmed]
+rustc → rustup [confirmed] → rustup installer [probable]
 ```
 
 ## List common runtimes
@@ -73,7 +88,6 @@ whowns --all --json
 OwnershipGraph (command)
 └── Resolution[] (active / shadowed, path, real_path)
     └── OwnershipNode[] (ordered nearest-first)
-        ├── id (stable) / name (display)
         ├── kind
         ├── package / version
         ├── Confidence
@@ -83,7 +97,6 @@ OwnershipGraph (command)
 
 - `Resolution`: the active executable and every shadowed executable found in `PATH`
 - `OwnershipNode`: the ordered `runtime -> version manager -> installation source` relationship
-- `id`: the stable machine-readable owner identity, such as `homebrew`, `sdkman`, or `macos_installer`; `name` is display text and can change without affecting `id`
 - `Evidence`: paths, symlinks, filesystem targets, receipts, package queries, and manager queries
 - `Confidence`: `confirmed`, `probable`, or `unknown`
 - `ActionGuide`: suggested inspect, update, and removal commands with safety notes
@@ -110,18 +123,31 @@ For supported managers, `whowns` runs read-only queries such as `which` or `curr
 
 ## Installation
 
-[GitHub Releases](https://github.com/shm11C3/whowns/releases) is the primary binary distribution channel. Download the archive for your OS and CPU, extract it, and run the bundled installer.
+[GitHub Releases](https://github.com/shm11C3/whowns/releases) is the primary binary distribution channel. The recommended installer detects the host OS and CPU, downloads the matching archive, verifies it against the release checksum manifest, and installs the standalone binary.
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/shm11C3/whowns/releases/latest/download/install.sh | sh
+```
+
+The default installation creates `$HOME/.local/bin/whowns` and the shorthand alias `$HOME/.local/bin/wio`. Pass installer options after `sh -s --`.
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/shm11C3/whowns/releases/latest/download/install.sh \
+  | sh -s -- --no-alias
+
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/shm11C3/whowns/releases/latest/download/install.sh \
+  | sh -s -- --bin-dir /usr/local/bin
+```
+
+You can also download and inspect a release archive before installing it.
 
 ```sh
 tar -xzf whowns-v0.1.0-aarch64-apple-darwin.tar.gz
 cd whowns-v0.1.0-aarch64-apple-darwin
 ./install.sh
-```
-
-The default destination is `$HOME/.local/bin/whowns`.
-
-```sh
-./install.sh --bin-dir /usr/local/bin
 ```
 
 See [docs/RELEASING.md](docs/RELEASING.md) for supported architectures, checksums, artifact attestations, and the release process.
