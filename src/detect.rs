@@ -7,8 +7,9 @@ use crate::model::{ActionGuide, Evidence, EvidenceKind, OwnerId, OwnershipNode};
 use crate::scan;
 
 mod owner;
+mod root;
 
-use owner::PATH_MANAGER_RULES;
+pub(crate) use root::ManagerRoots;
 
 type Detector = for<'a> fn(&DetectionContext<'a>) -> Option<OwnershipNode>;
 
@@ -36,8 +37,10 @@ struct DetectionContext<'a> {
     path: &'a Path,
     real_path: &'a Path,
     link_target: Option<PathBuf>,
+    candidate_paths: Vec<PathBuf>,
     paths: Vec<String>,
     runner: &'a CommandRunner,
+    roots: &'a ManagerRoots,
 }
 
 impl<'a> DetectionContext<'a> {
@@ -46,6 +49,7 @@ impl<'a> DetectionContext<'a> {
         path: &'a Path,
         real_path: &'a Path,
         runner: &'a CommandRunner,
+        roots: &'a ManagerRoots,
     ) -> Self {
         let link_target = immediate_link_target(path);
         let mut candidate_paths = vec![path.to_path_buf(), real_path.to_path_buf()];
@@ -61,8 +65,10 @@ impl<'a> DetectionContext<'a> {
             path,
             real_path,
             link_target,
+            candidate_paths,
             paths,
             runner,
+            roots,
         }
     }
 
@@ -108,8 +114,9 @@ pub fn detect(
     path: &Path,
     real_path: &Path,
     runner: &CommandRunner,
+    roots: &ManagerRoots,
 ) -> OwnershipNode {
-    let context = DetectionContext::new(command, path, real_path, runner);
+    let context = DetectionContext::new(command, path, real_path, runner, roots);
     DETECTORS
         .iter()
         .find_map(|detector| detector(&context))
@@ -144,25 +151,21 @@ fn detect_homebrew(context: &DetectionContext<'_>) -> Option<OwnershipNode> {
 }
 
 fn detect_path_manager(context: &DetectionContext<'_>) -> Option<OwnershipNode> {
-    let (marker, id) = PATH_MANAGER_RULES
-        .iter()
-        .find(|(marker, _)| context.contains(marker))
-        .map(|(marker, id)| (*marker, *id))?;
-    let package = id.tool_for_paths(&context.paths);
-    let version = id.version_for_paths(&context.paths);
+    let manager_path = context.roots.manager_path(&context.candidate_paths)?;
+    let id = manager_path.owner;
+    let package = id.tool_for_relative_path(&manager_path.relative_path);
+    let version = id.version_for_relative_path(&manager_path.relative_path);
     Some(context.owner(
         id,
         package,
         version,
-        context.evidence_with(
-            EvidenceKind::ManagedPathLayout,
-            format!("path matches the {} layout `{marker}`", id.display_name()),
-        ),
+        context.evidence_with(EvidenceKind::ManagedPathLayout, manager_path.evidence()),
     ))
 }
 
 fn detect_cargo_home(context: &DetectionContext<'_>) -> Option<OwnershipNode> {
-    context.contains("/.cargo/bin/").then_some(())?;
+    let cargo_path = context.roots.cargo_path(&context.candidate_paths)?;
+    (cargo_path.relative_path.iter().next() == Some(OsStr::new("bin"))).then_some(())?;
     let id = if matches!(
         context.command,
         "cargo" | "rustc" | "rustdoc" | "rustfmt" | "clippy-driver"
@@ -177,10 +180,7 @@ fn detect_cargo_home(context: &DetectionContext<'_>) -> Option<OwnershipNode> {
         id,
         None,
         None,
-        context.evidence_with(
-            EvidenceKind::ManagedPathLayout,
-            "path is inside the Cargo home bin directory",
-        ),
+        context.evidence_with(EvidenceKind::ManagedPathLayout, cargo_path.evidence()),
     ))
 }
 
@@ -354,6 +354,7 @@ pub fn enrich_with_manager_query(
     command: &str,
     expected_path: &Path,
     runner: &CommandRunner,
+    roots: &ManagerRoots,
 ) {
     enrich_with_manager_query_matching(
         owner,
@@ -361,6 +362,7 @@ pub fn enrich_with_manager_query(
         expected_path,
         QueryExpectation::Exact(expected_path),
         runner,
+        roots,
     );
 }
 
@@ -369,6 +371,7 @@ pub fn enrich_with_manager_query_in_root(
     command: &str,
     root: &Path,
     runner: &CommandRunner,
+    roots: &ManagerRoots,
 ) {
     enrich_with_manager_query_matching(
         owner,
@@ -376,6 +379,7 @@ pub fn enrich_with_manager_query_in_root(
         root,
         QueryExpectation::InsideRoot(root),
         runner,
+        roots,
     );
 }
 
@@ -385,6 +389,7 @@ fn enrich_with_manager_query_matching(
     action_path: &Path,
     expectation: QueryExpectation<'_>,
     runner: &CommandRunner,
+    roots: &ManagerRoots,
 ) {
     let id = owner.id;
     let Some(query) = manager_query(runner, id, command, expectation) else {
@@ -396,15 +401,22 @@ fn enrich_with_manager_query_matching(
         // above already records that, and there is nothing to enrich.
         return;
     };
-    let query_paths = vec![result.clone()];
+    let query_path = roots.manager_path_for(id, &[PathBuf::from(&result)]);
     if owner.package.is_none() {
-        owner.package = id.tool_for_paths(&query_paths);
+        owner.package = match id {
+            OwnerId::Fnm => Some("node".into()),
+            _ => query_path
+                .as_ref()
+                .and_then(|path| id.tool_for_relative_path(&path.relative_path)),
+        };
     }
     if owner.version.is_none() {
         owner.version = match id {
             OwnerId::Fnm => Some(result.trim_start_matches('v').to_owned()),
             OwnerId::Rustup => toolchain_from_rustup_path(&result),
-            _ => id.version_for_paths(&query_paths),
+            _ => query_path
+                .as_ref()
+                .and_then(|path| id.version_for_relative_path(&path.relative_path)),
         };
     }
     owner.actions = id.actions(
@@ -793,7 +805,13 @@ mod tests {
     }
 
     fn detect_for_test(command: &str, path: &Path, real_path: &Path) -> OwnershipNode {
-        detect(command, path, real_path, &CommandRunner::new())
+        detect(
+            command,
+            path,
+            real_path,
+            &CommandRunner::new(),
+            &ManagerRoots::for_home(Path::new("/home/me")),
+        )
     }
 
     #[test]
