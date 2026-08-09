@@ -40,6 +40,9 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
+      - name: Test installer
+        run: sh tests/install.sh
+
   build:
     needs: verify
     strategy:
@@ -124,6 +127,9 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
       - name: Download release archives
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -131,10 +137,19 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Stage curl installer
+        run: install -m 0755 scripts/install.sh dist/install.sh
+
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum ./*.tar.gz > SHA256SUMS
+          sha256sum ./*.tar.gz ./install.sh > SHA256SUMS
+
+      - name: Attest curl installer
+        if: github.event.repository.visibility == 'public'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: dist/install.sh
 
       - name: Attest checksum manifest
         if: github.event.repository.visibility == 'public'

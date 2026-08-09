@@ -111,18 +111,31 @@ OwnershipGraph (command)
 
 ## インストール
 
-[GitHub Releases](https://github.com/shm11C3/whowns/releases)を正式なバイナリ配布経路とします。OSとCPUに合うarchiveをダウンロードして展開し、同梱のinstallerを実行します。
+[GitHub Releases](https://github.com/shm11C3/whowns/releases)を正式なバイナリ配布経路とします。推奨installerはOSとCPUを判定し、対応するarchiveをダウンロードして、Releaseのchecksum manifestと照合してから単体バイナリをインストールします。
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/shm11C3/whowns/releases/latest/download/install.sh | sh
+```
+
+デフォルトでは`$HOME/.local/bin/whowns`と、短縮aliasの`$HOME/.local/bin/wio`を作成します。installerのオプションは`sh -s --`の後ろへ渡します。
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/shm11C3/whowns/releases/latest/download/install.sh \
+  | sh -s -- --no-alias
+
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/shm11C3/whowns/releases/latest/download/install.sh \
+  | sh -s -- --bin-dir /usr/local/bin
+```
+
+Release archiveを先にダウンロードして、内容を確認してからインストールする方法も利用できます。
 
 ```sh
 tar -xzf whowns-v0.1.0-aarch64-apple-darwin.tar.gz
 cd whowns-v0.1.0-aarch64-apple-darwin
 ./install.sh
-```
-
-デフォルトでは `$HOME/.local/bin/whowns` に単体バイナリをインストールします。
-
-```sh
-./install.sh --bin-dir /usr/local/bin
 ```
 
 checksum、artifact attestation、対応architecture、公開手順は [docs/RELEASING.md](docs/RELEASING.md) に記載しています。

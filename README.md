@@ -108,18 +108,31 @@ For supported managers, `whowns` runs read-only queries such as `which` or `curr
 
 ## Installation
 
-[GitHub Releases](https://github.com/shm11C3/whowns/releases) is the primary binary distribution channel. Download the archive for your OS and CPU, extract it, and run the bundled installer.
+[GitHub Releases](https://github.com/shm11C3/whowns/releases) is the primary binary distribution channel. The recommended installer detects the host OS and CPU, downloads the matching archive, verifies it against the release checksum manifest, and installs the standalone binary.
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/shm11C3/whowns/releases/latest/download/install.sh | sh
+```
+
+The default installation creates `$HOME/.local/bin/whowns` and the shorthand alias `$HOME/.local/bin/wio`. Pass installer options after `sh -s --`.
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/shm11C3/whowns/releases/latest/download/install.sh \
+  | sh -s -- --no-alias
+
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/shm11C3/whowns/releases/latest/download/install.sh \
+  | sh -s -- --bin-dir /usr/local/bin
+```
+
+You can also download and inspect a release archive before installing it.
 
 ```sh
 tar -xzf whowns-v0.1.0-aarch64-apple-darwin.tar.gz
 cd whowns-v0.1.0-aarch64-apple-darwin
 ./install.sh
-```
-
-The default destination is `$HOME/.local/bin/whowns`.
-
-```sh
-./install.sh --bin-dir /usr/local/bin
 ```
 
 See [docs/RELEASING.md](docs/RELEASING.md) for supported architectures, checksums, artifact attestations, and the release process.
