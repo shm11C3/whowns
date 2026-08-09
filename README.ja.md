@@ -23,14 +23,53 @@ Rust の単体バイナリなので、利用者側に Node.js やPythonなどの
 
 ## 目次
 
+- [インストール](#インストール)
 - [個別逆引き](#個別逆引き)
 - [一覧表示](#一覧表示)
 - [JSON](#json)
 - [確信度](#確信度)
 - [検出できる管理元](#検出できる管理元)
-- [インストール](#インストール)
 - [開発用ビルド](#開発用ビルド)
 - [現在の境界](#現在の境界)
+
+## インストール
+
+[GitHub Releases](https://github.com/shm11C3/whowns/releases)を正式なバイナリ配布経路とします。推奨installerはOSとCPUを判定し、対応するarchiveをダウンロードして、Releaseのchecksum manifestと照合してから単体バイナリをインストールします。
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/shm11C3/whowns/releases/latest/download/install.sh | sh
+```
+
+デフォルトでは`$HOME/.local/bin/whowns`と、短縮aliasの`$HOME/.local/bin/wio`を作成します。installerのオプションは`sh -s --`の後ろへ渡します。
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/shm11C3/whowns/releases/latest/download/install.sh \
+  | sh -s -- --no-alias
+
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/shm11C3/whowns/releases/latest/download/install.sh \
+  | sh -s -- --bin-dir /usr/local/bin
+```
+
+Release archiveを先にダウンロードして、内容を確認してからインストールする方法も利用できます。
+
+```sh
+tar -xzf whowns-v0.1.0-aarch64-apple-darwin.tar.gz
+cd whowns-v0.1.0-aarch64-apple-darwin
+./install.sh
+```
+
+checksum、artifact attestation、対応architecture、公開手順は [docs/RELEASING.md](docs/RELEASING.md) に記載しています。
+
+ソースからCargoで導入することもできます。
+
+```sh
+cargo install --path . --locked
+
+whowns node
+```
 
 ## 個別逆引き
 
@@ -143,45 +182,6 @@ OwnershipGraph (command)
 - 取得する出力サイズには上限があります。管理ツールが過剰な出力を返してもメモリを消費し尽くしません。
 - タイムアウトや起動に失敗した照会は、常に標準エラー出力へ `note:` 行として記録します。所有者が判明した後に確認のため実行する管理ツール照会(`which`/`current` 相当)は、非ゼロ終了を含むその結果を、さらにその所有者の `Evidence` にも記録します。劣化した確認照会が結果を静かに変えてしまうことはありません。
 - 照会は親プロセスの環境変数をそのまま引き継ぎます。管理ツールは `HOME` などの変数から自身のデータディレクトリを解決するため、環境をクリアしたり偽装したりすると、安全になるどころか誤った回答を招きます。
-
-## インストール
-
-[GitHub Releases](https://github.com/shm11C3/whowns/releases)を正式なバイナリ配布経路とします。推奨installerはOSとCPUを判定し、対応するarchiveをダウンロードして、Releaseのchecksum manifestと照合してから単体バイナリをインストールします。
-
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/shm11C3/whowns/releases/latest/download/install.sh | sh
-```
-
-デフォルトでは`$HOME/.local/bin/whowns`と、短縮aliasの`$HOME/.local/bin/wio`を作成します。installerのオプションは`sh -s --`の後ろへ渡します。
-
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/shm11C3/whowns/releases/latest/download/install.sh \
-  | sh -s -- --no-alias
-
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/shm11C3/whowns/releases/latest/download/install.sh \
-  | sh -s -- --bin-dir /usr/local/bin
-```
-
-Release archiveを先にダウンロードして、内容を確認してからインストールする方法も利用できます。
-
-```sh
-tar -xzf whowns-v0.1.0-aarch64-apple-darwin.tar.gz
-cd whowns-v0.1.0-aarch64-apple-darwin
-./install.sh
-```
-
-checksum、artifact attestation、対応architecture、公開手順は [docs/RELEASING.md](docs/RELEASING.md) に記載しています。
-
-ソースからCargoで導入することもできます。
-
-```sh
-cargo install --path . --locked
-
-whowns node
-```
 
 ## 開発用ビルド
 

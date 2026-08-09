@@ -22,14 +22,53 @@ The name compresses `who owns` into six characters. The tool focuses on explaini
 
 ## Table of contents
 
+- [Installation](#installation)
 - [Inspect a command](#inspect-a-command)
 - [List common runtimes](#list-common-runtimes)
 - [JSON](#json)
 - [Confidence](#confidence)
 - [Recognized owners](#recognized-owners)
-- [Installation](#installation)
 - [Development](#development)
 - [Current boundaries](#current-boundaries)
+
+## Installation
+
+[GitHub Releases](https://github.com/shm11C3/whowns/releases) is the primary binary distribution channel. The recommended installer detects the host OS and CPU, downloads the matching archive, verifies it against the release checksum manifest, and installs the standalone binary.
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/shm11C3/whowns/releases/latest/download/install.sh | sh
+```
+
+The default installation creates `$HOME/.local/bin/whowns` and the shorthand alias `$HOME/.local/bin/wio`. Pass installer options after `sh -s --`.
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/shm11C3/whowns/releases/latest/download/install.sh \
+  | sh -s -- --no-alias
+
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/shm11C3/whowns/releases/latest/download/install.sh \
+  | sh -s -- --bin-dir /usr/local/bin
+```
+
+You can also download and inspect a release archive before installing it.
+
+```sh
+tar -xzf whowns-v0.1.0-aarch64-apple-darwin.tar.gz
+cd whowns-v0.1.0-aarch64-apple-darwin
+./install.sh
+```
+
+See [docs/RELEASING.md](docs/RELEASING.md) for supported architectures, checksums, artifact attestations, and the release process.
+
+You can also install from source with Cargo.
+
+```sh
+cargo install --path . --locked
+
+whowns node
+```
 
 ## Inspect a command
 
@@ -140,45 +179,6 @@ These queries run through a single bounded execution policy, not raw, unbounded 
 - Captured output is bounded; a manager that misbehaves and writes excessive output cannot exhaust memory.
 - A timed-out or unstartable query is always printed as a `note:` line on stderr. A manager query — the confirmatory `which`/`current` query run after an owner is already identified — additionally records its outcome, including a non-zero exit, as `Evidence` on that owner, so a degraded confirmatory query stays visible instead of silently changing the result.
 - Queries inherit the parent process environment unmodified. Managers resolve their own data directories from variables such as `HOME`; clearing or fabricating environment state for them would make their answers wrong rather than safer.
-
-## Installation
-
-[GitHub Releases](https://github.com/shm11C3/whowns/releases) is the primary binary distribution channel. The recommended installer detects the host OS and CPU, downloads the matching archive, verifies it against the release checksum manifest, and installs the standalone binary.
-
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/shm11C3/whowns/releases/latest/download/install.sh | sh
-```
-
-The default installation creates `$HOME/.local/bin/whowns` and the shorthand alias `$HOME/.local/bin/wio`. Pass installer options after `sh -s --`.
-
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/shm11C3/whowns/releases/latest/download/install.sh \
-  | sh -s -- --no-alias
-
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/shm11C3/whowns/releases/latest/download/install.sh \
-  | sh -s -- --bin-dir /usr/local/bin
-```
-
-You can also download and inspect a release archive before installing it.
-
-```sh
-tar -xzf whowns-v0.1.0-aarch64-apple-darwin.tar.gz
-cd whowns-v0.1.0-aarch64-apple-darwin
-./install.sh
-```
-
-See [docs/RELEASING.md](docs/RELEASING.md) for supported architectures, checksums, artifact attestations, and the release process.
-
-You can also install from source with Cargo.
-
-```sh
-cargo install --path . --locked
-
-whowns node
-```
 
 ## Development
 
