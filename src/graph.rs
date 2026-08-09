@@ -64,10 +64,10 @@ fn upstream_owner(primary: &OwnershipNode, runtime_path: &Path) -> Option<Owners
     // These managers are not reliably on PATH themselves, so the manager root is
     // recovered from the runtime path instead of a PATH lookup.
     if manager == OwnerId::Nvm {
-        return Some(source_from_root(manager, nvm_root(runtime_path)));
+        return Some(source_from_root(manager, "nvm", nvm_root(runtime_path)));
     }
     if manager == OwnerId::Sdkman {
-        return Some(source_from_root(manager, sdkman_root(runtime_path)));
+        return Some(source_from_root(manager, "sdk", sdkman_root(runtime_path)));
     }
 
     let manager_command = manager.manager_executable()?;
@@ -92,12 +92,12 @@ fn upstream_owner(primary: &OwnershipNode, runtime_path: &Path) -> Option<Owners
     }
 }
 
-fn source_from_root(manager: OwnerId, root: Option<PathBuf>) -> OwnershipNode {
+fn source_from_root(manager: OwnerId, command: &str, root: Option<PathBuf>) -> OwnershipNode {
     let Some(root) = root else {
         return detect::unconfirmed_manager_source(manager, None);
     };
     let real_root = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
-    let source = detect::detect(manager.display_name(), &root, &real_root);
+    let source = detect::detect(command, &root, &real_root);
     if source.id == manager {
         detect::unconfirmed_manager_source(manager, Some(&root))
     } else {
@@ -189,6 +189,42 @@ mod tests {
         assert_eq!(owners[1].id, OwnerId::Homebrew);
         assert_eq!(owners[1].package.as_deref(), Some("nvm"));
         fs::remove_file(nvm_root).unwrap();
+        fs::remove_dir(parent).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manager_root_detection_uses_the_real_command_not_the_display_name() {
+        let parent = env::temp_dir().join(format!("whowns-sdkman-chain-{}", std::process::id()));
+        fs::create_dir_all(&parent).unwrap();
+        let sdkman_root = parent.join(".sdkman");
+        let _ = fs::remove_file(&sdkman_root);
+        symlink(
+            "/home/me/.local/share/mise/installs/sdkman/5.18.2",
+            &sdkman_root,
+        )
+        .unwrap();
+        let runtime = sdkman_root.join("candidates/java/21.0.2-tem/bin/java");
+
+        let graph = from_resolutions(
+            "java",
+            vec![ResolvedExecutable {
+                path: runtime.clone(),
+                real_path: runtime,
+                active: true,
+            }],
+        );
+
+        let owners = &graph.resolutions[0].owners;
+        assert_eq!(owners.len(), 2);
+        assert_eq!(owners[0].id, OwnerId::Sdkman);
+        assert_eq!(owners[1].id, OwnerId::Mise);
+        // Regression: source_from_root used to pass display_name() ("SDKMAN!")
+        // as the lookup command, producing the nonsensical `mise which
+        // 'SDKMAN!'`. It must use the real `sdk` command instead, so renaming
+        // the display text can never change this generated command.
+        assert_eq!(owners[1].actions.inspect.as_deref(), Some("mise which sdk"));
+        fs::remove_file(sdkman_root).unwrap();
         fs::remove_dir(parent).unwrap();
     }
 }

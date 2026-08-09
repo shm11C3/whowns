@@ -336,6 +336,44 @@ mod tests {
     }
 
     #[test]
+    fn all_covers_every_owner_id() {
+        // OwnerId::ALL is a hand-written list; unlike as_str/display_name/kind
+        // it is not an exhaustive match, so a new variant would not fail to
+        // compile if left out. This match forces ALL to be updated instead.
+        for id in OwnerId::ALL {
+            match id {
+                OwnerId::Nix
+                | OwnerId::Homebrew
+                | OwnerId::MacPorts
+                | OwnerId::Nvm
+                | OwnerId::Fnm
+                | OwnerId::Volta
+                | OwnerId::Mise
+                | OwnerId::Asdf
+                | OwnerId::Pyenv
+                | OwnerId::Rbenv
+                | OwnerId::Sdkman
+                | OwnerId::Uv
+                | OwnerId::Rustup
+                | OwnerId::RustupInstaller
+                | OwnerId::CargoInstall
+                | OwnerId::PnpmHome
+                | OwnerId::DenoInstaller
+                | OwnerId::BunInstaller
+                | OwnerId::MacosInstaller
+                | OwnerId::PythonOrgInstaller
+                | OwnerId::Dpkg
+                | OwnerId::Rpm
+                | OwnerId::Pacman
+                | OwnerId::Apk
+                | OwnerId::OperatingSystem
+                | OwnerId::UnconfirmedOwner
+                | OwnerId::UnconfirmedSource => {}
+            }
+        }
+    }
+
+    #[test]
     fn stable_identifiers_are_independent_of_display_text() {
         assert_eq!(OwnerId::Sdkman.as_str(), "sdkman");
         assert_eq!(OwnerId::Sdkman.display_name(), "SDKMAN!");
