@@ -14,6 +14,14 @@
 - Simplicity is not an excuse for brittle, duplicated, or hard-to-maintain code. Keep the design easy to understand and able to accommodate reasonable changes to current requirements.
 - Introduce an abstraction only when the present code or requirement demonstrates the need for it.
 
+## Scope discipline
+
+- The current task defines the scope. A valid problem does not imply that it should be fixed in the current change.
+- Do not perform opportunistic refactoring, cleanup, renaming, modernization, or consistency fixes unless required to satisfy the current requirement. Report out-of-scope problems separately.
+- Before changing code outside the directly affected area, establish why the current requirement cannot be satisfied without it. Do not justify a broader change after deciding to make it.
+- Evaluate review feedback against the current requirement and scope. A technically valid suggestion may still belong in a separate change.
+- Stop once the current requirement is satisfied and relevant checks pass. Do not continue improving nearby code.
+
 ## Prohibited changes
 
 - Do not overengineer.
