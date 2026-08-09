@@ -1,6 +1,6 @@
 [package]
 name = "whowns"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Explain which installer or version manager owns runtimes on PATH"
 license = "MIT"
