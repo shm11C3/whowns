@@ -45,7 +45,7 @@ node
 └── ○ shadowed
     ├── executable: /opt/homebrew/bin/node
     ├── resolves to: /opt/homebrew/Cellar/node/25.6.1_1/bin/node
-    ├── ownership: node → Homebrew [confirmed]
+    ├── ownership: node → Homebrew [probable]
     └── actions (Homebrew)
         ├── inspect: brew info node
         ├── update: brew upgrade node
@@ -66,7 +66,7 @@ whowns rustc cargo --explain
 When the environment provides enough evidence, an ownership chain can look like this:
 
 ```text
-node → nvm [confirmed] → Homebrew [confirmed]
+node → nvm [probable] → Homebrew [probable]
 rustc → rustup [confirmed] → rustup installer [probable]
 ```
 
@@ -112,9 +112,11 @@ OwnershipGraph (command)
 
 ## Confidence
 
-- `confirmed`: strong ownership evidence such as a package receipt, Nix store path, Homebrew Cellar path, or recognized version-manager layout
-- `probable`: the path and tool layout strongly suggest an owner, but no direct ownership record was found
+- `confirmed`: a package database or receipt records ownership of the file, or a manager query returns the resolved executable
+- `probable`: a recognized managed-path layout, installed but non-file-specific receipt, or operating-system path strongly suggests an owner without a direct ownership record
 - `unknown`: no recognized owner was found, so a safe update or removal method cannot be selected
+
+Confidence is derived from the typed evidence on each ownership claim. Detectors report what they observed; they cannot assign `confirmed` directly. `--explain` shows the receipt, package query, matching manager query, or weaker path evidence behind the result.
 
 A file under `/usr/local` is not automatically labeled as manually installed. Vendor installers, package managers, and manual copies can all use that location. Without stronger evidence, `whowns` reports `unconfirmed owner` and does not generate update or removal commands.
 
@@ -128,7 +130,7 @@ A file under `/usr/local` is not automatically labeled as manually installed. Ve
 - Linux packages owned by dpkg, RPM, pacman, or apk
 - operating-system paths
 
-For supported managers, `whowns` runs read-only queries such as `which` or `current` and records their results as `Evidence`.
+For supported managers, `whowns` runs read-only queries such as `which` or `current` and records their results as `Evidence`. For a path under the MacPorts prefix, `port -q provides <path>` checks the local registry; the path alone is `probable`, while a registry match is `confirmed`.
 
 These queries run through a single bounded execution policy, not raw, unbounded subprocess calls:
 

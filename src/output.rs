@@ -52,7 +52,7 @@ pub fn print_list(graphs: &[OwnershipGraph], explain: bool, mut out: impl Write)
         };
         let confidence = active
             .primary_owner()
-            .map(|owner| owner.confidence.as_str())
+            .map(|owner| owner.confidence().as_str())
             .unwrap_or("unknown");
         writeln!(
             out,
@@ -150,7 +150,7 @@ fn owner_chain(resolution: &Resolution) -> String {
     resolution
         .owners
         .iter()
-        .map(|owner| format!("{} [{}]", owner.display_name(), owner.confidence.as_str()))
+        .map(|owner| format!("{} [{}]", owner.display_name(), owner.confidence().as_str()))
         .collect::<Vec<_>>()
         .join(" → ")
 }
@@ -226,7 +226,7 @@ fn print_owner(
         "{prefix}{} {} [{}]",
         connector(last),
         owner.display_name(),
-        owner.confidence.as_str()
+        owner.confidence().as_str()
     )?;
     let prefix = child_prefix(prefix, last);
     let actions = action_entries(&owner.actions);
@@ -256,7 +256,7 @@ fn print_owner(
                 out,
                 &evidence_prefix,
                 index + 1 == owner.evidence.len(),
-                &evidence.source,
+                evidence.source(),
                 &evidence.detail,
             )?;
         }
@@ -327,11 +327,17 @@ fn print_owner_json(mut out: impl Write, owner: &OwnershipNode, last: bool) -> i
     json_string_field(&mut out, 12, "kind", owner.kind().as_str(), true)?;
     json_optional_field(&mut out, 12, "package", owner.package.as_deref(), true)?;
     json_optional_field(&mut out, 12, "version", owner.version.as_deref(), true)?;
-    json_string_field(&mut out, 12, "confidence", owner.confidence.as_str(), true)?;
+    json_string_field(
+        &mut out,
+        12,
+        "confidence",
+        owner.confidence().as_str(),
+        true,
+    )?;
     writeln!(out, "            \"evidence\": [")?;
     for (index, evidence) in owner.evidence.iter().enumerate() {
         writeln!(out, "              {{")?;
-        json_string_field(&mut out, 16, "source", &evidence.source, true)?;
+        json_string_field(&mut out, 16, "source", evidence.source(), true)?;
         json_string_field(&mut out, 16, "detail", &evidence.detail, false)?;
         writeln!(
             out,
@@ -431,7 +437,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::model::{Confidence, Evidence, OwnerId, OwnershipNode, ResolutionStatus};
+    use crate::model::{Evidence, EvidenceKind, OwnerId, OwnershipNode, ResolutionStatus};
 
     fn graph() -> OwnershipGraph {
         OwnershipGraph {
@@ -441,32 +447,33 @@ mod tests {
                 real_path: PathBuf::from("/opt/homebrew/Cellar/node/25/bin/node"),
                 status: ResolutionStatus::Active,
                 owners: vec![
-                    OwnershipNode {
-                        id: OwnerId::Nvm,
-                        package: Some("node".into()),
-                        version: Some("22.3.0".into()),
-                        confidence: Confidence::Confirmed,
-                        evidence: vec![Evidence::new(
-                            "PATH",
-                            "entry uses the nvm versions directory",
+                    OwnershipNode::new(
+                        OwnerId::Nvm,
+                        Some("node".into()),
+                        Some("22.3.0".into()),
+                        vec![Evidence::new(
+                            EvidenceKind::ManagerQueryMatch,
+                            "nvm query matches the selected runtime",
                         )],
-                        actions: ActionGuide {
+                        ActionGuide {
                             inspect: Some("nvm current".into()),
                             update: Some("nvm install <new-version>".into()),
                             ..ActionGuide::default()
                         },
-                    },
-                    OwnershipNode {
-                        id: OwnerId::Homebrew,
-                        package: Some("nvm".into()),
-                        version: Some("0.40.3".into()),
-                        confidence: Confidence::Confirmed,
-                        evidence: vec![Evidence::new("symlink", "nvm root points into Cellar")],
-                        actions: ActionGuide {
+                    ),
+                    OwnershipNode::new(
+                        OwnerId::Homebrew,
+                        Some("nvm".into()),
+                        Some("0.40.3".into()),
+                        vec![Evidence::new(
+                            EvidenceKind::PackageDatabaseOwnership,
+                            "Homebrew registry owns the nvm root",
+                        )],
+                        ActionGuide {
                             inspect: Some("brew info nvm".into()),
                             ..ActionGuide::default()
                         },
-                    },
+                    ),
                 ],
             }],
         }
@@ -519,7 +526,7 @@ mod tests {
             "        │   ├── package: node\n",
             "        │   ├── version: 22.3.0\n",
             "        │   ├── evidence\n",
-            "        │   │   └── PATH: entry uses the nvm versions directory\n",
+            "        │   │   └── manager query: nvm query matches the selected runtime\n",
             "        │   └── actions\n",
             "        │       ├── inspect: nvm current\n",
             "        │       └── update: nvm install <new-version>\n",
@@ -556,20 +563,22 @@ mod tests {
                 path: PathBuf::from("/home/me/.sdkman/candidates/java/21/bin/java"),
                 real_path: PathBuf::from("/home/me/.sdkman/candidates/java/21/bin/java"),
                 status: ResolutionStatus::Active,
-                owners: vec![OwnershipNode {
-                    id: OwnerId::Sdkman,
-                    package: Some("java".into()),
-                    version: Some("21".into()),
-                    confidence: Confidence::Confirmed,
-                    evidence: vec![],
-                    actions: ActionGuide::default(),
-                }],
+                owners: vec![OwnershipNode::new(
+                    OwnerId::Sdkman,
+                    Some("java".into()),
+                    Some("21".into()),
+                    vec![Evidence::new(
+                        EvidenceKind::ManagedPathLayout,
+                        "path matches the SDKMAN! layout",
+                    )],
+                    ActionGuide::default(),
+                )],
             }],
         };
         let mut inspect = Vec::new();
         print_inspect(&[graph], true, &mut inspect).unwrap();
         let inspect = String::from_utf8(inspect).unwrap();
-        assert!(inspect.contains("SDKMAN! [confirmed]"));
+        assert!(inspect.contains("SDKMAN! [probable]"));
         assert!(inspect.contains("kind: version_manager"));
     }
 
