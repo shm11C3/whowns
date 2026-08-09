@@ -6,6 +6,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 const WHOWNS: &str = env!("CARGO_BIN_EXE_whowns");
 
@@ -257,10 +258,20 @@ fn a_hung_manager_query_is_killed_and_reported_instead_of_blocking() {
     // by its absolute path rather than relying on PATH to find it.
     sandbox.executable("tools/mise", "#!/bin/sh\n/bin/sleep 30\n");
 
+    let started = Instant::now();
     let output = sandbox.run(WHOWNS, &["node", "--explain"], &[&node_bin, &tools]);
     let stdout = stdout(&output);
     let stderr = stderr(&output);
 
+    // Bounds this against actually blocking on the 30-second sleep, not just
+    // against the process eventually returning: a regression that dropped
+    // the timeout back to an unconditional wait would still exit 0
+    // eventually, just 30 seconds later.
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "a hung manager query should not block whowns for anywhere near its 30-second sleep, elapsed: {:?}",
+        started.elapsed()
+    );
     assert!(output.status.success());
     assert!(
         stdout.contains("`mise which node` did not finish within the timeout and was killed"),
