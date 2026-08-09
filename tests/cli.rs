@@ -137,6 +137,7 @@ fn emits_the_common_ownership_graph_as_json() {
     assert!(stdout.starts_with("[\n"));
     assert!(stdout.contains("\"command\": \"node\""));
     assert!(stdout.contains("\"status\": \"active\""));
+    assert!(stdout.contains("\"id\": \"homebrew\""));
     assert!(stdout.contains("\"name\": \"Homebrew\""));
     assert!(stdout.contains("\"confidence\": \"confirmed\""));
     assert!(stdout.contains("\"action_guide\""));

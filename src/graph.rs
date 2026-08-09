@@ -3,7 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::detect;
-use crate::model::{OwnerKind, OwnershipGraph, OwnershipNode, Resolution, ResolutionStatus};
+use crate::model::{
+    OwnerId, OwnerKind, OwnershipGraph, OwnershipNode, Resolution, ResolutionStatus,
+};
 use crate::scan::{self, ResolvedExecutable};
 
 pub fn inspect(command: &str) -> OwnershipGraph {
@@ -52,34 +54,36 @@ fn from_resolutions(command: &str, resolved: Vec<ResolvedExecutable>) -> Ownersh
 
 fn upstream_owner(primary: &OwnershipNode, runtime_path: &Path) -> Option<OwnershipNode> {
     if !matches!(
-        primary.kind,
+        primary.kind(),
         OwnerKind::VersionManager | OwnerKind::ToolInstaller
     ) {
         return None;
     }
 
-    if primary.name == "nvm" {
-        return Some(source_from_root("nvm", nvm_root(runtime_path)));
+    // These managers are not always on PATH themselves, so the manager root is
+    // recovered from the runtime path instead of a PATH lookup.
+    if primary.id == OwnerId::Nvm {
+        return Some(source_from_root(OwnerId::Nvm, nvm_root(runtime_path)));
     }
-    if primary.name == "SDKMAN!" {
-        return Some(source_from_root("SDKMAN!", sdkman_root(runtime_path)));
+    if primary.id == OwnerId::Sdkman {
+        return Some(source_from_root(OwnerId::Sdkman, sdkman_root(runtime_path)));
     }
 
-    let manager_command = detect::manager_executable(&primary.name)?;
+    let manager_command = detect::manager_executable(primary.id)?;
     let manager_resolution = scan::find_executables(manager_command)
         .into_iter()
         .find(|resolution| resolution.active);
     let Some(manager_resolution) = manager_resolution else {
-        return Some(detect::unconfirmed_manager_source(&primary.name, None));
+        return Some(detect::unconfirmed_manager_source(primary.id, None));
     };
     let source = detect::detect(
         manager_command,
         &manager_resolution.path,
         &manager_resolution.real_path,
     );
-    if source.name == primary.name {
+    if source.id == primary.id {
         Some(detect::unconfirmed_manager_source(
-            &primary.name,
+            primary.id,
             Some(&manager_resolution.path),
         ))
     } else {
@@ -87,13 +91,13 @@ fn upstream_owner(primary: &OwnershipNode, runtime_path: &Path) -> Option<Owners
     }
 }
 
-fn source_from_root(manager: &str, root: Option<PathBuf>) -> OwnershipNode {
+fn source_from_root(manager: OwnerId, root: Option<PathBuf>) -> OwnershipNode {
     let Some(root) = root else {
         return detect::unconfirmed_manager_source(manager, None);
     };
     let real_root = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
-    let source = detect::detect(manager, &root, &real_root);
-    if source.name == manager {
+    let source = detect::detect(manager.as_str(), &root, &real_root);
+    if source.id == manager {
         detect::unconfirmed_manager_source(manager, Some(&root))
     } else {
         source
@@ -144,7 +148,7 @@ mod tests {
         assert_eq!(graph.resolutions.len(), 2);
         assert_eq!(graph.active().unwrap().status, ResolutionStatus::Active);
         assert_eq!(graph.shadowed_count(), 1);
-        assert_eq!(graph.resolutions[1].owners[0].name, "Homebrew");
+        assert_eq!(graph.resolutions[1].owners[0].id, OwnerId::Homebrew);
     }
 
     #[test]
@@ -180,8 +184,8 @@ mod tests {
 
         let owners = &graph.resolutions[0].owners;
         assert_eq!(owners.len(), 2);
-        assert_eq!(owners[0].name, "nvm");
-        assert_eq!(owners[1].name, "Homebrew");
+        assert_eq!(owners[0].id, OwnerId::Nvm);
+        assert_eq!(owners[1].id, OwnerId::Homebrew);
         assert_eq!(owners[1].package.as_deref(), Some("nvm"));
         fs::remove_file(nvm_root).unwrap();
         fs::remove_dir(parent).unwrap();

@@ -93,8 +93,8 @@ fn print_resolution(
                 out,
                 "    owner[{}]: {} ({}, {})",
                 index + 1,
-                owner.name,
-                owner.kind.as_str(),
+                owner.display_name(),
+                owner.kind().as_str(),
                 owner.confidence.as_str()
             )?;
             if let Some(package) = &owner.package {
@@ -131,7 +131,7 @@ fn owner_chain(resolution: &Resolution) -> String {
     resolution
         .owners
         .iter()
-        .map(|owner| format!("{} [{}]", owner.name, owner.confidence.as_str()))
+        .map(|owner| format!("{} [{}]", owner.display_name(), owner.confidence.as_str()))
         .collect::<Vec<_>>()
         .join(" -> ")
 }
@@ -207,8 +207,9 @@ fn print_resolution_json(
 
 fn print_owner_json(mut out: impl Write, owner: &OwnershipNode, last: bool) -> io::Result<()> {
     writeln!(out, "          {{")?;
-    json_string_field(&mut out, 12, "name", &owner.name, true)?;
-    json_string_field(&mut out, 12, "kind", owner.kind.as_str(), true)?;
+    json_string_field(&mut out, 12, "id", owner.id.as_str(), true)?;
+    json_string_field(&mut out, 12, "name", owner.display_name(), true)?;
+    json_string_field(&mut out, 12, "kind", owner.kind().as_str(), true)?;
     json_optional_field(&mut out, 12, "package", owner.package.as_deref(), true)?;
     json_optional_field(&mut out, 12, "version", owner.version.as_deref(), true)?;
     json_string_field(&mut out, 12, "confidence", owner.confidence.as_str(), true)?;
@@ -315,7 +316,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::model::{Confidence, OwnerKind, OwnershipNode, ResolutionStatus};
+    use crate::model::{Confidence, OwnerId, OwnershipNode, ResolutionStatus};
 
     fn graph() -> OwnershipGraph {
         OwnershipGraph {
@@ -325,8 +326,7 @@ mod tests {
                 real_path: PathBuf::from("/opt/homebrew/Cellar/node/25/bin/node"),
                 status: ResolutionStatus::Active,
                 owners: vec![OwnershipNode {
-                    name: "Homebrew".into(),
-                    kind: OwnerKind::PackageManager,
+                    id: OwnerId::Homebrew,
                     package: Some("node".into()),
                     version: Some("25".into()),
                     confidence: Confidence::Confirmed,
@@ -358,6 +358,40 @@ mod tests {
         assert!(json.contains("\"resolutions\""));
         assert!(json.contains("\"ownership_chain\""));
         assert!(json.contains("\"action_guide\""));
+    }
+
+    #[test]
+    fn json_separates_the_stable_owner_id_from_the_display_name() {
+        let mut json = Vec::new();
+        print_json(&[graph()], &mut json).unwrap();
+        let json = String::from_utf8(json).unwrap();
+        assert!(json.contains("\"id\": \"homebrew\""));
+        assert!(json.contains("\"name\": \"Homebrew\""));
+    }
+
+    #[test]
+    fn text_output_renders_display_names_not_stable_ids() {
+        let graph = OwnershipGraph {
+            command: "java".into(),
+            resolutions: vec![Resolution {
+                path: PathBuf::from("/home/me/.sdkman/candidates/java/21/bin/java"),
+                real_path: PathBuf::from("/home/me/.sdkman/candidates/java/21/bin/java"),
+                status: ResolutionStatus::Active,
+                owners: vec![OwnershipNode {
+                    id: OwnerId::Sdkman,
+                    package: Some("java".into()),
+                    version: Some("21".into()),
+                    confidence: Confidence::Confirmed,
+                    evidence: vec![],
+                    actions: ActionGuide::default(),
+                }],
+            }],
+        };
+        let mut inspect = Vec::new();
+        print_inspect(&[graph], true, &mut inspect).unwrap();
+        let inspect = String::from_utf8(inspect).unwrap();
+        assert!(inspect.contains("SDKMAN! [confirmed]"));
+        assert!(inspect.contains("owner[1]: SDKMAN! (version_manager, confirmed)"));
     }
 
     #[test]
