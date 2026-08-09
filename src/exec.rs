@@ -454,18 +454,36 @@ mod tests {
 
         // Give the OS a brief moment to actually deliver the signal.
         thread::sleep(Duration::from_millis(200));
-        let still_alive = StdCommand::new("kill")
-            .arg("-0")
-            .arg(grandchild_pid.to_string())
-            .status()
-            .unwrap()
-            .success();
+        // `kill -0` alone isn't enough: it reports success for a zombie too
+        // (the pid is still allocated until something reaps it), and in a
+        // container where PID 1 doesn't subreap orphans, a killed descendant
+        // can sit as a zombie rather than disappearing outright. Check the
+        // process state and accept "zombie" as "terminated" as well.
+        let state = process_state(grandchild_pid);
+        let terminated = state.as_deref().is_none_or(|state| state.starts_with('Z'));
         assert!(
-            !still_alive,
-            "the backgrounded descendant (pid {grandchild_pid}) should have been killed along with its process group"
+            terminated,
+            "the backgrounded descendant (pid {grandchild_pid}, ps state {state:?}) should have been killed along with its process group"
         );
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `ps` state code for `pid` (e.g. "S" running/sleeping, "Z" zombie), or
+    /// `None` if `ps` reports the pid does not exist at all.
+    #[cfg(unix)]
+    fn process_state(pid: u32) -> Option<String> {
+        let output = StdCommand::new("ps")
+            .args(["-o", "stat="])
+            .arg("-p")
+            .arg(pid.to_string())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let state = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        (!state.is_empty()).then_some(state)
     }
 
     #[cfg(unix)]
