@@ -21,8 +21,11 @@ pub enum EvidenceKind {
     OperatingSystemPath,
     PackageDatabaseOwnership,
     PackageDatabaseQuery,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     PackageReceiptOwnership,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     PackageReceiptMetadata,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     InstalledPackageReceipt,
     ManagerQueryMatch,
     ManagerQuery,
