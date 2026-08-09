@@ -85,38 +85,73 @@ pub enum OwnerId {
 }
 
 impl OwnerId {
-    /// Every identity the tool can report. Platform-specific owners stay in the
-    /// list so the identity set does not vary by build target.
+    /// Every identity the tool can report, in `next()` order. Derived from
+    /// `next()` at compile time (rather than hand-written) so it cannot
+    /// silently omit a variant that compiles there: `all()` panics during
+    /// const evaluation, which is a build failure, if `COUNT` and the
+    /// `next()` chain ever disagree on how many variants exist.
     #[cfg(test)]
-    pub const ALL: [Self; 27] = [
-        Self::Nix,
-        Self::Homebrew,
-        Self::Nvm,
-        Self::Fnm,
-        Self::Volta,
-        Self::Mise,
-        Self::Asdf,
-        Self::Pyenv,
-        Self::Rbenv,
-        Self::Sdkman,
-        Self::Uv,
-        Self::Rustup,
-        Self::RustupInstaller,
-        Self::CargoInstall,
-        Self::PnpmHome,
-        Self::DenoInstaller,
-        Self::BunInstaller,
-        Self::MacosInstaller,
-        Self::PythonOrgInstaller,
-        Self::MacPorts,
-        Self::Dpkg,
-        Self::Rpm,
-        Self::Pacman,
-        Self::Apk,
-        Self::OperatingSystem,
-        Self::UnconfirmedOwner,
-        Self::UnconfirmedSource,
-    ];
+    pub const ALL: [Self; Self::COUNT] = Self::all();
+
+    #[cfg(test)]
+    const COUNT: usize = 27;
+
+    #[cfg(test)]
+    const fn all() -> [Self; Self::COUNT] {
+        let mut array = [Self::Nix; Self::COUNT];
+        let mut current = Self::Nix;
+        let mut index = 0;
+        loop {
+            array[index] = current;
+            index += 1;
+            match current.next() {
+                Some(next) => current = next,
+                None => break,
+            }
+        }
+        assert!(
+            index == Self::COUNT,
+            "OwnerId::COUNT is out of sync with the next() chain"
+        );
+        array
+    }
+
+    /// Enumeration order backing `ALL`. Exhaustive, like `as_str`/
+    /// `display_name`/`kind`: adding a variant forces a new arm here, and
+    /// wiring it into the chain is what makes it show up in `ALL` — there is
+    /// no separate list to remember to update.
+    #[cfg(test)]
+    const fn next(self) -> Option<Self> {
+        match self {
+            Self::Nix => Some(Self::Homebrew),
+            Self::Homebrew => Some(Self::MacPorts),
+            Self::MacPorts => Some(Self::Nvm),
+            Self::Nvm => Some(Self::Fnm),
+            Self::Fnm => Some(Self::Volta),
+            Self::Volta => Some(Self::Mise),
+            Self::Mise => Some(Self::Asdf),
+            Self::Asdf => Some(Self::Pyenv),
+            Self::Pyenv => Some(Self::Rbenv),
+            Self::Rbenv => Some(Self::Sdkman),
+            Self::Sdkman => Some(Self::Uv),
+            Self::Uv => Some(Self::Rustup),
+            Self::Rustup => Some(Self::RustupInstaller),
+            Self::RustupInstaller => Some(Self::CargoInstall),
+            Self::CargoInstall => Some(Self::PnpmHome),
+            Self::PnpmHome => Some(Self::DenoInstaller),
+            Self::DenoInstaller => Some(Self::BunInstaller),
+            Self::BunInstaller => Some(Self::MacosInstaller),
+            Self::MacosInstaller => Some(Self::PythonOrgInstaller),
+            Self::PythonOrgInstaller => Some(Self::Dpkg),
+            Self::Dpkg => Some(Self::Rpm),
+            Self::Rpm => Some(Self::Pacman),
+            Self::Pacman => Some(Self::Apk),
+            Self::Apk => Some(Self::OperatingSystem),
+            Self::OperatingSystem => Some(Self::UnconfirmedOwner),
+            Self::UnconfirmedOwner => Some(Self::UnconfirmedSource),
+            Self::UnconfirmedSource => None,
+        }
+    }
 
     /// Stable snake_case identifier. Part of the machine-readable contract:
     /// changing one of these values is a breaking change for `--json` consumers.
@@ -333,44 +368,6 @@ mod tests {
             seen.push(value);
         }
         assert_eq!(seen.len(), OwnerId::ALL.len());
-    }
-
-    #[test]
-    fn all_covers_every_owner_id() {
-        // OwnerId::ALL is a hand-written list; unlike as_str/display_name/kind
-        // it is not an exhaustive match, so a new variant would not fail to
-        // compile if left out. This match forces ALL to be updated instead.
-        for id in OwnerId::ALL {
-            match id {
-                OwnerId::Nix
-                | OwnerId::Homebrew
-                | OwnerId::MacPorts
-                | OwnerId::Nvm
-                | OwnerId::Fnm
-                | OwnerId::Volta
-                | OwnerId::Mise
-                | OwnerId::Asdf
-                | OwnerId::Pyenv
-                | OwnerId::Rbenv
-                | OwnerId::Sdkman
-                | OwnerId::Uv
-                | OwnerId::Rustup
-                | OwnerId::RustupInstaller
-                | OwnerId::CargoInstall
-                | OwnerId::PnpmHome
-                | OwnerId::DenoInstaller
-                | OwnerId::BunInstaller
-                | OwnerId::MacosInstaller
-                | OwnerId::PythonOrgInstaller
-                | OwnerId::Dpkg
-                | OwnerId::Rpm
-                | OwnerId::Pacman
-                | OwnerId::Apk
-                | OwnerId::OperatingSystem
-                | OwnerId::UnconfirmedOwner
-                | OwnerId::UnconfirmedSource => {}
-            }
-        }
     }
 
     #[test]
