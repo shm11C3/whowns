@@ -272,6 +272,34 @@ fn honors_custom_manager_roots_from_environment() {
 
 #[test]
 fn explains_xdg_and_default_manager_roots() {
+    let nvm_cases = [
+        (
+            "nvm-xdg-root",
+            "xdg-config/nvm/versions/node/v22.3.0/bin/node",
+            "$XDG_CONFIG_HOME",
+        ),
+        (
+            "nvm-home-fallback-with-xdg",
+            ".nvm/versions/node/v22.3.0/bin/node",
+            "default nvm root",
+        ),
+    ];
+    for (name, executable, expected_evidence) in nvm_cases {
+        let sandbox = Sandbox::new(name);
+        let xdg_config = sandbox.path("xdg-config");
+        let executable = sandbox.executable(executable, "#!/bin/sh\nexit 0\n");
+        let output = sandbox.run_with_environment(
+            WHOWNS,
+            &["node", "--explain"],
+            &[executable.parent().unwrap()],
+            &[("XDG_CONFIG_HOME", &xdg_config)],
+        );
+        let stdout = stdout(&output);
+        assert!(output.status.success(), "output: {stdout}");
+        assert!(stdout.contains("nvm [probable]"), "output: {stdout}");
+        assert!(stdout.contains(expected_evidence), "output: {stdout}");
+    }
+
     let xdg_cases = [
         ("mise", "mise/installs/node/22.3.0/bin/node", "node", "mise"),
         (
@@ -325,6 +353,24 @@ fn explains_xdg_and_default_manager_roots() {
         default_stdout.contains("default pyenv root"),
         "output: {default_stdout}"
     );
+}
+
+#[test]
+fn fnm_query_adds_the_fixed_node_package_for_an_inferred_root() {
+    let sandbox = Sandbox::new("fnm-query-package");
+    let node = sandbox.executable("fnm_multishells/session/bin/node", "#!/bin/sh\nexit 0\n");
+    let fnm = sandbox.executable("tools/fnm", "#!/bin/sh\nprintf 'v22.3.0\\n'\n");
+
+    let output = sandbox.run(
+        WHOWNS,
+        &["node", "--explain"],
+        &[node.parent().unwrap(), fnm.parent().unwrap()],
+    );
+    let stdout = stdout(&output);
+
+    assert!(output.status.success(), "output: {stdout}");
+    assert!(stdout.contains("package: node"), "output: {stdout}");
+    assert!(stdout.contains("version: 22.3.0"), "output: {stdout}");
 }
 
 #[test]

@@ -131,20 +131,35 @@ impl ManagerRoots {
 
     fn resolve(mut get: impl FnMut(&str) -> Option<OsString>) -> Self {
         let home = non_empty(get("HOME")).map(PathBuf::from);
-        let xdg_config = non_empty(get("XDG_CONFIG_HOME")).map(PathBuf::from);
-        let xdg_data = non_empty(get("XDG_DATA_HOME")).map(PathBuf::from);
+        let xdg_config = non_empty(get("XDG_CONFIG_HOME"))
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute());
+        let xdg_data = non_empty(get("XDG_DATA_HOME"))
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute());
         let mut managers = Vec::new();
 
+        let nvm_dir = non_empty(get("NVM_DIR"));
+        let has_nvm_override = nvm_dir.is_some();
         push_environment_or_default(
             &mut managers,
             OwnerId::Nvm,
             "NVM_DIR",
-            non_empty(get("NVM_DIR")),
+            nvm_dir,
             xdg_config
                 .as_ref()
                 .map(|root| (root.join("nvm"), RootSource::Environment("XDG_CONFIG_HOME")))
                 .or_else(|| default_root(&home, ".nvm")),
         );
+        if !has_nvm_override
+            && xdg_config.is_some()
+            && let Some((path, source)) = default_root(&home, ".nvm")
+        {
+            managers.push(OwnerRoot {
+                owner: OwnerId::Nvm,
+                root: ResolvedRoot::new(path, source),
+            });
+        }
         let fnm_default = xdg_data
             .as_ref()
             .map(|root| (root.join("fnm"), RootSource::Environment("XDG_DATA_HOME")))
@@ -234,19 +249,27 @@ impl ManagerRoots {
     }
 
     pub(crate) fn manager_path(&self, paths: &[PathBuf]) -> Option<ManagerPath> {
-        self.managers
+        paths
             .iter()
-            .find_map(|owner_root| {
-                paths.iter().find_map(|path| {
-                    owner_root
-                        .root
-                        .relative_path(path)
-                        .map(|relative_path| ManagerPath {
-                            owner: owner_root.owner,
-                            relative_path,
-                            root: owner_root.root.clone(),
-                        })
-                })
+            .find_map(|path| {
+                self.managers
+                    .iter()
+                    .filter_map(|owner_root| {
+                        owner_root
+                            .root
+                            .relative_path(path)
+                            .map(|relative_path| ManagerPath {
+                                owner: owner_root.owner,
+                                relative_path,
+                                root: owner_root.root.clone(),
+                            })
+                    })
+                    .max_by_key(|manager_path| {
+                        (
+                            path.starts_with(&manager_path.root.path),
+                            manager_path.root.path.components().count(),
+                        )
+                    })
             })
             .or_else(|| inferred_manager_root(paths, OwnerId::Fnm, "fnm_multishells"))
             .or_else(|| inferred_manager_root(paths, OwnerId::Mise, ".mise"))
@@ -368,6 +391,50 @@ mod tests {
         assert_eq!(path.owner, OwnerId::Pyenv);
         assert_eq!(path.relative_path, Path::new("versions/3.12.4/bin/python3"));
         assert!(path.evidence().contains("$PYENV_ROOT"));
+    }
+
+    #[test]
+    fn prefers_the_most_specific_matching_manager_root() {
+        let roots = ManagerRoots::resolve(|variable| match variable {
+            "HOME" => Some(OsString::from("/home/me")),
+            "NVM_DIR" => Some(OsString::from("/managers")),
+            "PYENV_ROOT" => Some(OsString::from("/managers/custom-pyenv")),
+            _ => None,
+        });
+
+        let path = roots
+            .manager_path(&[PathBuf::from(
+                "/managers/custom-pyenv/versions/3.12.4/bin/python3",
+            )])
+            .unwrap();
+
+        assert_eq!(path.owner, OwnerId::Pyenv);
+        assert!(path.evidence().contains("$PYENV_ROOT"));
+    }
+
+    #[test]
+    fn ignores_relative_xdg_roots_and_uses_home_defaults() {
+        let roots = ManagerRoots::resolve(|variable| match variable {
+            "HOME" => Some(OsString::from("/home/me")),
+            "XDG_CONFIG_HOME" | "XDG_DATA_HOME" => Some(OsString::from("relative")),
+            _ => None,
+        });
+
+        let nvm = roots
+            .manager_path(&[PathBuf::from(
+                "/home/me/.nvm/versions/node/v22.3.0/bin/node",
+            )])
+            .unwrap();
+        let mise = roots
+            .manager_path(&[PathBuf::from(
+                "/home/me/.local/share/mise/installs/node/22.3.0/bin/node",
+            )])
+            .unwrap();
+
+        assert_eq!(nvm.owner, OwnerId::Nvm);
+        assert!(nvm.evidence().contains("default nvm root"));
+        assert_eq!(mise.owner, OwnerId::Mise);
+        assert!(mise.evidence().contains("default mise root"));
     }
 
     #[test]

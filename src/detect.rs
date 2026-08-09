@@ -403,9 +403,12 @@ fn enrich_with_manager_query_matching(
     };
     let query_path = roots.manager_path_for(id, &[PathBuf::from(&result)]);
     if owner.package.is_none() {
-        owner.package = query_path
-            .as_ref()
-            .and_then(|path| id.tool_for_relative_path(&path.relative_path));
+        owner.package = match id {
+            OwnerId::Fnm => Some("node".into()),
+            _ => query_path
+                .as_ref()
+                .and_then(|path| id.tool_for_relative_path(&path.relative_path)),
+        };
     }
     if owner.version.is_none() {
         owner.version = match id {

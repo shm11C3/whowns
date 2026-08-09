@@ -257,7 +257,10 @@ impl OwnerId {
 }
 
 fn path_parts(path: &Path) -> Vec<&str> {
-    path.iter().filter_map(|part| part.to_str()).collect()
+    path.iter()
+        .map(|part| part.to_str())
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default()
 }
 
 fn package_id_from_command_context(package: &str) -> Option<&str> {
@@ -296,6 +299,20 @@ pub(super) fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_manager_metadata_when_a_path_component_is_not_utf8() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let path = Path::new("installs")
+            .join(OsStr::from_bytes(b"\xff"))
+            .join("22.3.0/bin/node");
+
+        assert_eq!(OwnerId::Asdf.tool_for_relative_path(&path), None);
+        assert_eq!(OwnerId::Asdf.version_for_relative_path(&path), None);
+    }
 
     #[test]
     fn macos_receipt_installers_omit_inspect_without_a_real_package() {
