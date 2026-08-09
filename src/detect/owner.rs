@@ -236,7 +236,8 @@ impl OwnerId {
                 ..ActionGuide::default()
             },
             Self::PythonOrgInstaller => ActionGuide {
-                inspect: Some(format!("pkgutil --pkg-info {package}")),
+                inspect: package_id_from_command_context(&package)
+                    .map(|id| format!("pkgutil --pkg-info {id}")),
                 note: Some("Update with a newer python.org installer. Follow python.org's macOS uninstall guidance rather than deleting framework files blindly.".into()),
                 ..ActionGuide::default()
             },
@@ -311,5 +312,22 @@ pub(super) fn shell_quote(value: &str) -> String {
         value.into()
     } else {
         format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macos_receipt_installers_omit_inspect_without_a_real_package() {
+        // Both arms build a `pkgutil --pkg-info <package>` inspect command from
+        // the action-guide package placeholder; neither should emit it verbatim
+        // when no package was actually detected.
+        let path = Path::new("/usr/local/bin/fixture");
+        for id in [OwnerId::MacosInstaller, OwnerId::PythonOrgInstaller] {
+            let guide = id.actions("fixture", None, None, path);
+            assert!(guide.inspect.is_none(), "owner: {}", id.as_str());
+        }
     }
 }
