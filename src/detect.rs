@@ -507,6 +507,22 @@ pub(crate) fn unconfirmed_manager_source(manager: OwnerId, path: Option<&Path>) 
     )
 }
 
+pub(crate) fn unconfirmed_chain_termination(detail: impl Into<String>) -> OwnershipNode {
+    owner(
+        OwnerId::UnconfirmedSource,
+        None,
+        None,
+        vec![Evidence::new(EvidenceKind::OwnershipTraversal, detail)],
+        ActionGuide {
+            note: Some(
+                "Ownership traversal stopped safely. Verify the remaining installation source manually."
+                    .into(),
+            ),
+            ..ActionGuide::default()
+        },
+    )
+}
+
 fn owner(
     id: OwnerId,
     package: Option<String>,

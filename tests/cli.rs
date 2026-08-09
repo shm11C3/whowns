@@ -106,8 +106,109 @@ fn explains_a_runtime_manager_and_the_managers_installation_source() {
     assert!(output.status.success());
     assert!(stdout.contains("ownership: node → nvm [probable] → mise [probable]"));
     assert!(stdout.contains("├── nvm [probable]"));
-    assert!(stdout.contains("└── mise [probable]"));
+    assert!(stdout.contains("├── mise [probable]"));
+    assert!(stdout.contains("└── unconfirmed source [unknown]"));
     assert!(stdout.contains("kind: version_manager"));
+}
+
+#[test]
+fn resolves_more_than_two_ownership_nodes_in_nearest_first_order() {
+    let sandbox = Sandbox::new("deep-ownership-chain");
+    let managed_nvm = sandbox.path(".local/share/mise/installs/nvm/0.40.3");
+    sandbox.executable(
+        ".local/share/mise/installs/nvm/0.40.3/versions/node/v22.3.0/bin/node",
+        "#!/bin/sh\nexit 0\n",
+    );
+    symlink(&managed_nvm, sandbox.path(".nvm")).unwrap();
+    let selected_bin = sandbox.path(".nvm/versions/node/v22.3.0/bin");
+
+    let homebrew_mise = sandbox.executable(
+        "homebrew/Cellar/mise/2026.8.0/bin/mise",
+        "#!/bin/sh\nexit 0\n",
+    );
+    let tools = sandbox.path("tools");
+    fs::create_dir_all(&tools).unwrap();
+    symlink(&homebrew_mise, tools.join("mise")).unwrap();
+
+    let output = sandbox.run(WHOWNS, &["node", "--explain"], &[&selected_bin, &tools]);
+    let stdout = stdout(&output);
+
+    assert!(output.status.success());
+    assert!(
+        stdout.contains("ownership: node → nvm [probable] → mise [probable] → Homebrew [probable]"),
+        "output: {stdout}"
+    );
+    assert!(stderr(&output).is_empty());
+}
+
+#[test]
+fn stops_an_ownership_cycle_with_visible_evidence() {
+    let sandbox = Sandbox::new("ownership-cycle");
+    let managed_nvm = sandbox.path(".local/share/mise/installs/nvm/0.40.3");
+    sandbox.executable(
+        ".local/share/mise/installs/nvm/0.40.3/versions/node/v22.3.0/bin/node",
+        "#!/bin/sh\nexit 0\n",
+    );
+    symlink(&managed_nvm, sandbox.path(".nvm")).unwrap();
+    let selected_bin = sandbox.path(".nvm/versions/node/v22.3.0/bin");
+
+    let tools = sandbox.path("tools");
+    let managed_mise = sandbox.executable(
+        ".local/share/mise/installs/mise/2026.8.0/bin/mise",
+        "#!/bin/sh\nexit 0\n",
+    );
+    fs::create_dir_all(&tools).unwrap();
+    symlink(&managed_mise, tools.join("mise")).unwrap();
+
+    let output = sandbox.run(WHOWNS, &["node", "--explain"], &[&selected_bin, &tools]);
+    let stdout = stdout(&output);
+
+    assert!(output.status.success());
+    assert!(
+        stdout.contains("unconfirmed source [unknown]"),
+        "output: {stdout}"
+    );
+    assert!(
+        stdout.contains("ownership cycle detected"),
+        "output: {stdout}"
+    );
+    assert!(stderr(&output).is_empty());
+}
+
+#[test]
+fn stops_at_the_maximum_depth_with_visible_evidence() {
+    let sandbox = Sandbox::new("ownership-depth-limit");
+    let managed_nvm = sandbox.path(".local/share/mise/installs/nvm/0.40.3");
+    sandbox.executable(
+        ".local/share/mise/installs/nvm/0.40.3/versions/node/v22.3.0/bin/node",
+        "#!/bin/sh\nexit 0\n",
+    );
+    symlink(&managed_nvm, sandbox.path(".nvm")).unwrap();
+    let selected_bin = sandbox.path(".nvm/versions/node/v22.3.0/bin");
+
+    let tools = sandbox.path("tools");
+    fs::create_dir_all(&tools).unwrap();
+    for (command, target) in [
+        ("mise", ".asdf/installs/mise/2026.8.0/bin/mise"),
+        ("asdf", ".pyenv/versions/3.14/bin/asdf"),
+        ("pyenv", ".rbenv/versions/4.0/bin/pyenv"),
+        ("rbenv", ".volta/tools/image/rbenv/4.0/bin/rbenv"),
+        ("volta", ".local/share/fnm/node-versions/v24/bin/volta"),
+        ("fnm", ".local/share/uv/python/cpython-3.14/bin/fnm"),
+    ] {
+        let target = sandbox.executable(target, "#!/bin/sh\nexit 0\n");
+        symlink(target, tools.join(command)).unwrap();
+    }
+
+    let output = sandbox.run(WHOWNS, &["node", "--explain"], &[&selected_bin, &tools]);
+    let stdout = stdout(&output);
+
+    assert!(output.status.success());
+    assert!(
+        stdout.contains("ownership resolution reached the safety limit of 8 owners"),
+        "output: {stdout}"
+    );
+    assert!(stderr(&output).is_empty());
 }
 
 #[test]

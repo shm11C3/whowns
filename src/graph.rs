@@ -9,6 +9,13 @@ use crate::model::{
 };
 use crate::scan::{self, ResolvedExecutable};
 
+const MAX_OWNERSHIP_DEPTH: usize = 8;
+
+struct UpstreamOwner {
+    node: OwnershipNode,
+    path: Option<PathBuf>,
+}
+
 pub fn inspect(command: &str, runner: &CommandRunner) -> OwnershipGraph {
     from_resolutions(command, scan::find_executables(command), runner)
 }
@@ -34,11 +41,7 @@ fn from_resolutions(
         .map(|resolved| {
             let mut primary = detect::detect(command, &resolved.path, &resolved.real_path, runner);
             detect::enrich_with_manager_query(&mut primary, command, &resolved.real_path, runner);
-            let upstream = upstream_owner(&primary, &resolved.path, runner);
-            let mut owners = vec![primary];
-            if let Some(upstream) = upstream {
-                owners.push(upstream);
-            }
+            let owners = ownership_chain(primary, &resolved.path, runner);
             Resolution {
                 path: resolved.path,
                 real_path: resolved.real_path,
@@ -57,11 +60,76 @@ fn from_resolutions(
     }
 }
 
+fn ownership_chain(
+    primary: OwnershipNode,
+    runtime_path: &Path,
+    runner: &CommandRunner,
+) -> Vec<OwnershipNode> {
+    let mut visited_owners = vec![primary.id];
+    let mut visited_paths = vec![path_identity(runtime_path)];
+    let mut current_path = runtime_path.to_path_buf();
+    let mut owners = vec![primary];
+
+    loop {
+        let current = owners.last().expect("an ownership chain is never empty");
+        if !matches!(
+            current.kind(),
+            OwnerKind::VersionManager | OwnerKind::ToolInstaller
+        ) {
+            break;
+        }
+        if owners.len() >= MAX_OWNERSHIP_DEPTH {
+            owners.push(detect::unconfirmed_chain_termination(format!(
+                "ownership resolution reached the safety limit of {MAX_OWNERSHIP_DEPTH} owners"
+            )));
+            break;
+        }
+
+        let Some(upstream) = upstream_owner(current, &current_path, runner) else {
+            break;
+        };
+        if upstream.node.id == OwnerId::UnconfirmedSource {
+            owners.push(upstream.node);
+            break;
+        }
+
+        let upstream_path = upstream.path.map(|path| path_identity(&path));
+        let repeated_owner = visited_owners.contains(&upstream.node.id);
+        let repeated_path = upstream_path
+            .as_ref()
+            .is_some_and(|path| visited_paths.contains(path));
+        if repeated_owner || repeated_path {
+            let path = upstream_path.as_deref().map_or_else(
+                || "an unknown path".into(),
+                |path| path.display().to_string(),
+            );
+            owners.push(detect::unconfirmed_chain_termination(format!(
+                "ownership cycle detected while resolving {} at {path}",
+                upstream.node.display_name()
+            )));
+            break;
+        }
+
+        visited_owners.push(upstream.node.id);
+        if let Some(path) = upstream_path {
+            visited_paths.push(path.clone());
+            current_path = path;
+        }
+        owners.push(upstream.node);
+    }
+
+    owners
+}
+
+fn path_identity(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 fn upstream_owner(
     primary: &OwnershipNode,
     runtime_path: &Path,
     runner: &CommandRunner,
-) -> Option<OwnershipNode> {
+) -> Option<UpstreamOwner> {
     if !matches!(
         primary.kind(),
         OwnerKind::VersionManager | OwnerKind::ToolInstaller
@@ -94,7 +162,10 @@ fn upstream_owner(
         .into_iter()
         .find(|resolution| resolution.active);
     let Some(manager_resolution) = manager_resolution else {
-        return Some(detect::unconfirmed_manager_source(manager, None));
+        return Some(UpstreamOwner {
+            node: detect::unconfirmed_manager_source(manager, None),
+            path: None,
+        });
     };
     let source = detect::detect(
         manager_command,
@@ -102,14 +173,10 @@ fn upstream_owner(
         &manager_resolution.real_path,
         runner,
     );
-    if source.id == manager {
-        Some(detect::unconfirmed_manager_source(
-            manager,
-            Some(&manager_resolution.path),
-        ))
-    } else {
-        Some(source)
-    }
+    Some(UpstreamOwner {
+        node: source,
+        path: Some(manager_resolution.path),
+    })
 }
 
 fn source_from_root(
@@ -117,16 +184,18 @@ fn source_from_root(
     command: &str,
     root: Option<PathBuf>,
     runner: &CommandRunner,
-) -> OwnershipNode {
+) -> UpstreamOwner {
     let Some(root) = root else {
-        return detect::unconfirmed_manager_source(manager, None);
+        return UpstreamOwner {
+            node: detect::unconfirmed_manager_source(manager, None),
+            path: None,
+        };
     };
     let real_root = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
     let source = detect::detect(command, &root, &real_root, runner);
-    if source.id == manager {
-        detect::unconfirmed_manager_source(manager, Some(&root))
-    } else {
-        source
+    UpstreamOwner {
+        node: source,
+        path: Some(root),
     }
 }
 
@@ -248,9 +317,10 @@ mod tests {
         );
 
         let owners = &graph.resolutions[0].owners;
-        assert_eq!(owners.len(), 2);
+        assert_eq!(owners.len(), 3);
         assert_eq!(owners[0].id, OwnerId::Sdkman);
         assert_eq!(owners[1].id, OwnerId::Mise);
+        assert_eq!(owners[2].id, OwnerId::UnconfirmedSource);
         // Regression: source_from_root used to pass display_name() ("SDKMAN!")
         // as the lookup command, producing the nonsensical `mise which
         // 'SDKMAN!'`. It must use the real `sdk` command instead, so renaming

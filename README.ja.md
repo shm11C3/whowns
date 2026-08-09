@@ -71,9 +71,11 @@ node → nvm [probable] → Homebrew [probable]
 rustc → rustup [confirmed] → rustup installer [probable]
 ```
 
+導入元に到達するまで上流を解決します。循環、または8つを超える所有者を検出した場合は、安全のため探索を止め、停止理由を根拠に持つ `unconfirmed source` ノードを末尾に追加します。
+
 ## 一覧表示
 
-一覧も個別診断と同じ `OwnershipGraph` から生成します。専用の検出ロジックはありません。
+一覧も個別診断と同じ `OwnershipGraph` から生成します。このグラフはコマンド単位のモデルであり、複数の PATH resolution を持てます。一方、各 resolution が持つ所有関係は、近い管理元から順に並ぶ1本の線形 chain です。専用の検出ロジックはありません。
 
 ```sh
 whowns --all
@@ -95,7 +97,7 @@ whowns --all --json
 概念モデルは次の構造です。
 
 ```text
-OwnershipGraph (command)
+OwnershipGraph (command とその PATH resolutions)
 └── Resolution[] (active / shadowed, path, real_path)
     └── OwnershipNode[] (近い管理元から順番に並ぶ)
         ├── id (安定 ID) / name (表示名)
@@ -107,7 +109,7 @@ OwnershipGraph (command)
 ```
 
 - `Resolution`: PATH 上の有効な実体と隠れている実体
-- `OwnershipNode`: `runtime -> version manager -> installation source` の順序付き所有関係
+- `OwnershipNode`: `runtime -> manager -> upstream manager -> installation source` と近い順に並ぶ線形 chain の1要素
 - `id`: `homebrew`、`sdkman`、`macos_installer` のような安定した機械可読の所有者 ID。`name` は表示用テキストであり、変更しても `id` には影響しない
 - `Evidence`: PATH、symlink、filesystem、`pkgutil`、パッケージ照会、管理ツール照会などの根拠
 - `Confidence`: `confirmed`、`probable`、`unknown`
