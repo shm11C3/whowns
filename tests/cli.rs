@@ -2,9 +2,10 @@
 
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -97,6 +98,50 @@ fn stdout(output: &Output) -> String {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8(output.stderr.clone()).unwrap()
+}
+
+fn assert_json_document(json: &[u8], expected_command: &str) {
+    let mut child = Command::new("python3")
+        .args([
+            "-c",
+            r#"
+import json
+import sys
+
+document = json.load(sys.stdin)
+assert type(document) is dict
+assert type(document.get("schema_version")) is int
+assert document["schema_version"] == 1
+assert type(document.get("graphs")) is list
+assert len(document["graphs"]) == 1
+
+graph = document["graphs"][0]
+assert graph["command"] == sys.argv[1]
+assert type(graph.get("resolutions")) is list
+assert len(graph["resolutions"]) == 1
+
+resolution = graph["resolutions"][0]
+assert resolution["status"] == "active"
+assert type(resolution.get("ownership_chain")) is list
+assert len(resolution["ownership_chain"]) == 1
+
+owner = resolution["ownership_chain"][0]
+assert owner["id"] == "homebrew"
+assert owner["name"] == "Homebrew"
+"#,
+            expected_command,
+        ])
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("python3 is required to validate JSON in tests");
+    child.stdin.as_mut().unwrap().write_all(json).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "invalid JSON: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -543,13 +588,8 @@ fn emits_the_common_ownership_graph_as_json() {
     let stdout = stdout(&output);
 
     assert!(output.status.success());
-    assert!(stdout.starts_with("[\n"));
-    assert!(stdout.contains("\"command\": \"node\""));
-    assert!(stdout.contains("\"status\": \"active\""));
-    assert!(stdout.contains("\"id\": \"homebrew\""));
-    assert!(stdout.contains("\"name\": \"Homebrew\""));
-    assert!(stdout.contains("\"confidence\": \"probable\""));
-    assert!(stdout.contains("\"action_guide\""));
+    assert_json_document(&output.stdout, "node");
+    assert!(stdout.starts_with("{\n"));
     assert!(stderr(&output).is_empty());
 }
 
@@ -582,6 +622,8 @@ fn all_mode_reuses_the_individual_diagnostic_model() {
     let individual = sandbox.run(WHOWNS, &["node", "--json"], &[&bin]);
     let all = sandbox.run(WHOWNS, &["--all", "--json"], &[&bin]);
 
+    assert_json_document(&individual.stdout, "node");
+    assert_json_document(&all.stdout, "node");
     assert_eq!(individual.status.code(), all.status.code());
     assert_eq!(individual.stdout, all.stdout);
     assert_eq!(individual.stderr, all.stderr);

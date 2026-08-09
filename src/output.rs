@@ -267,12 +267,16 @@ fn print_owner(
     Ok(())
 }
 
+const JSON_SCHEMA_VERSION: u8 = 1;
+
 pub fn print_json(graphs: &[OwnershipGraph], mut out: impl Write) -> io::Result<()> {
-    writeln!(out, "[")?;
+    writeln!(out, "{{")?;
+    writeln!(out, "  \"schema_version\": {JSON_SCHEMA_VERSION},")?;
+    writeln!(out, "  \"graphs\": [")?;
     for (graph_index, graph) in graphs.iter().enumerate() {
-        writeln!(out, "  {{")?;
-        writeln!(out, "    \"command\": \"{}\",", escape(&graph.command))?;
-        writeln!(out, "    \"resolutions\": [")?;
+        writeln!(out, "    {{")?;
+        writeln!(out, "      \"command\": \"{}\",", escape(&graph.command))?;
+        writeln!(out, "      \"resolutions\": [")?;
         for (resolution_index, resolution) in graph.resolutions.iter().enumerate() {
             print_resolution_json(
                 &mut out,
@@ -280,15 +284,16 @@ pub fn print_json(graphs: &[OwnershipGraph], mut out: impl Write) -> io::Result<
                 resolution_index + 1 == graph.resolutions.len(),
             )?;
         }
-        writeln!(out, "    ]")?;
+        writeln!(out, "      ]")?;
         let comma = if graph_index + 1 == graphs.len() {
             ""
         } else {
             ","
         };
-        writeln!(out, "  }}{comma}")?;
+        writeln!(out, "    }}{comma}")?;
     }
-    writeln!(out, "]")
+    writeln!(out, "  ]")?;
+    writeln!(out, "}}")
 }
 
 fn print_resolution_json(
@@ -296,52 +301,52 @@ fn print_resolution_json(
     resolution: &Resolution,
     last: bool,
 ) -> io::Result<()> {
-    writeln!(out, "      {{")?;
-    json_string_field(&mut out, 8, "status", resolution.status.as_str(), true)?;
+    writeln!(out, "        {{")?;
+    json_string_field(&mut out, 10, "status", resolution.status.as_str(), true)?;
     json_string_field(
         &mut out,
-        8,
+        10,
         "path",
         &resolution.path.to_string_lossy(),
         true,
     )?;
     json_string_field(
         &mut out,
-        8,
+        10,
         "real_path",
         &resolution.real_path.to_string_lossy(),
         true,
     )?;
-    writeln!(out, "        \"ownership_chain\": [")?;
+    writeln!(out, "          \"ownership_chain\": [")?;
     for (owner_index, owner) in resolution.owners.iter().enumerate() {
         print_owner_json(&mut out, owner, owner_index + 1 == resolution.owners.len())?;
     }
-    writeln!(out, "        ]")?;
-    writeln!(out, "      }}{}", if last { "" } else { "," })
+    writeln!(out, "          ]")?;
+    writeln!(out, "        }}{}", if last { "" } else { "," })
 }
 
 fn print_owner_json(mut out: impl Write, owner: &OwnershipNode, last: bool) -> io::Result<()> {
-    writeln!(out, "          {{")?;
-    json_string_field(&mut out, 12, "id", owner.id.as_str(), true)?;
-    json_string_field(&mut out, 12, "name", owner.display_name(), true)?;
-    json_string_field(&mut out, 12, "kind", owner.kind().as_str(), true)?;
-    json_optional_field(&mut out, 12, "package", owner.package.as_deref(), true)?;
-    json_optional_field(&mut out, 12, "version", owner.version.as_deref(), true)?;
+    writeln!(out, "            {{")?;
+    json_string_field(&mut out, 14, "id", owner.id.as_str(), true)?;
+    json_string_field(&mut out, 14, "name", owner.display_name(), true)?;
+    json_string_field(&mut out, 14, "kind", owner.kind().as_str(), true)?;
+    json_optional_field(&mut out, 14, "package", owner.package.as_deref(), true)?;
+    json_optional_field(&mut out, 14, "version", owner.version.as_deref(), true)?;
     json_string_field(
         &mut out,
-        12,
+        14,
         "confidence",
         owner.confidence().as_str(),
         true,
     )?;
-    writeln!(out, "            \"evidence\": [")?;
+    writeln!(out, "              \"evidence\": [")?;
     for (index, evidence) in owner.evidence.iter().enumerate() {
-        writeln!(out, "              {{")?;
-        json_string_field(&mut out, 16, "source", evidence.source(), true)?;
-        json_string_field(&mut out, 16, "detail", &evidence.detail, false)?;
+        writeln!(out, "                {{")?;
+        json_string_field(&mut out, 18, "source", evidence.source(), true)?;
+        json_string_field(&mut out, 18, "detail", &evidence.detail, false)?;
         writeln!(
             out,
-            "              }}{}",
+            "                }}{}",
             if index + 1 == owner.evidence.len() {
                 ""
             } else {
@@ -349,32 +354,32 @@ fn print_owner_json(mut out: impl Write, owner: &OwnershipNode, last: bool) -> i
             }
         )?;
     }
-    writeln!(out, "            ],")?;
-    writeln!(out, "            \"action_guide\": {{")?;
+    writeln!(out, "              ],")?;
+    writeln!(out, "              \"action_guide\": {{")?;
     json_optional_field(
         &mut out,
-        14,
+        16,
         "inspect",
         owner.actions.inspect.as_deref(),
         true,
     )?;
     json_optional_field(
         &mut out,
-        14,
+        16,
         "update",
         owner.actions.update.as_deref(),
         true,
     )?;
     json_optional_field(
         &mut out,
-        14,
+        16,
         "remove",
         owner.actions.remove.as_deref(),
         true,
     )?;
-    json_optional_field(&mut out, 14, "note", owner.actions.note.as_deref(), false)?;
-    writeln!(out, "            }}")?;
-    writeln!(out, "          }}{}", if last { "" } else { "," })
+    json_optional_field(&mut out, 16, "note", owner.actions.note.as_deref(), false)?;
+    writeln!(out, "              }}")?;
+    writeln!(out, "            }}{}", if last { "" } else { "," })
 }
 
 fn json_string_field(
@@ -434,6 +439,8 @@ fn escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::process::{Command, Stdio};
+
     use std::path::PathBuf;
 
     use super::*;
@@ -477,6 +484,51 @@ mod tests {
                 ],
             }],
         }
+    }
+
+    fn assert_representative_json_document(json: &[u8]) {
+        let mut child = Command::new("python3")
+            .args([
+                "-c",
+                r#"
+import json
+import sys
+
+document = json.load(sys.stdin)
+assert type(document) is dict
+assert type(document.get("schema_version")) is int
+assert document["schema_version"] == 1
+assert type(document.get("graphs")) is list
+assert len(document["graphs"]) == 1
+
+graph = document["graphs"][0]
+assert graph["command"] == "node"
+assert type(graph.get("resolutions")) is list
+assert len(graph["resolutions"]) == 1
+
+resolution = graph["resolutions"][0]
+assert resolution["status"] == "active"
+assert type(resolution.get("ownership_chain")) is list
+assert len(resolution["ownership_chain"]) == 2
+
+nvm, homebrew = resolution["ownership_chain"]
+assert nvm["id"] == "nvm"
+assert nvm["name"] == "nvm"
+assert homebrew["id"] == "homebrew"
+assert homebrew["name"] == "Homebrew"
+"#,
+            ])
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("python3 is required to validate JSON in tests");
+        child.stdin.as_mut().unwrap().write_all(json).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "invalid JSON: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
@@ -535,24 +587,10 @@ mod tests {
     }
 
     #[test]
-    fn json_contains_common_graph_fields() {
+    fn json_document_is_versioned_and_has_stable_owner_identities() {
         let mut json = Vec::new();
         print_json(&[graph()], &mut json).unwrap();
-        let json = String::from_utf8(json).unwrap();
-        assert!(json.contains("\"resolutions\""));
-        assert!(json.contains("\"ownership_chain\""));
-        assert!(json.contains("\"action_guide\""));
-    }
-
-    #[test]
-    fn json_separates_the_stable_owner_id_from_the_display_name() {
-        let mut json = Vec::new();
-        print_json(&[graph()], &mut json).unwrap();
-        let json = String::from_utf8(json).unwrap();
-        assert!(json.contains("\"id\": \"nvm\""));
-        assert!(json.contains("\"name\": \"nvm\""));
-        assert!(json.contains("\"id\": \"homebrew\""));
-        assert!(json.contains("\"name\": \"Homebrew\""));
+        assert_representative_json_document(&json);
     }
 
     #[test]
@@ -583,7 +621,35 @@ mod tests {
     }
 
     #[test]
-    fn escapes_json_control_characters() {
-        assert_eq!(escape("a\"b\\c\n"), "a\\\"b\\\\c\\n");
+    fn json_control_characters_round_trip_through_a_parser() {
+        let command = "a\"b\\c\n\u{0001}";
+        let graph = OwnershipGraph {
+            command: command.into(),
+            resolutions: vec![],
+        };
+        let mut json = Vec::new();
+        print_json(&[graph], &mut json).unwrap();
+
+        let mut child = Command::new("python3")
+            .args([
+                "-c",
+                concat!(
+                    "import json, sys; ",
+                    "document = json.load(sys.stdin); ",
+                    "assert document['graphs'][0]['command'] == sys.argv[1]",
+                ),
+                command,
+            ])
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("python3 is required to validate JSON in tests");
+        child.stdin.as_mut().unwrap().write_all(&json).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "JSON value did not round trip: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

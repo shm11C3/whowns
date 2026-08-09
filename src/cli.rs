@@ -78,7 +78,7 @@ ARGS:
 OPTIONS:
     --all            Summarize common development runtimes
     --explain        Show detailed evidence and every ownership layer
-    --json           Emit the common OwnershipGraph model as JSON
+    --json           Emit the versioned OwnershipGraph JSON document
     --show-missing   Include missing runtimes with --all
     -h, --help       Print help
     -V, --version    Print version
