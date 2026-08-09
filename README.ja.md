@@ -1,5 +1,10 @@
 # whowns
 
+[![CI](https://github.com/shm11C3/whowns/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/shm11C3/whowns/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/shm11C3/whowns?sort=semver)](https://github.com/shm11C3/whowns/releases/latest)
+[![Platforms: macOS and Linux](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-blue)](#現在の境界)
+[![License: MIT](https://img.shields.io/github/license/shm11C3/whowns)](LICENSE)
+
 [English](README.md)
 
 「この `node`、何で入れたんだっけ？」を個別に逆引きし、管理元と次に使うべき管理コマンドを証拠つきで説明する診断 CLI です。
