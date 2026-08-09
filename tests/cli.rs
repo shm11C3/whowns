@@ -218,6 +218,10 @@ fn stops_at_the_maximum_depth_with_visible_evidence() {
         stdout.contains("ownership resolution reached the safety limit of 8 owners"),
         "output: {stdout}"
     );
+    assert!(
+        stdout.contains("└── unconfirmed source [unknown]"),
+        "output: {stdout}"
+    );
     assert!(stderr(&output).is_empty(), "stderr: {}", stderr(&output));
 }
 
