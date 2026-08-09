@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use crate::{exec, graph, output};
@@ -34,14 +35,14 @@ pub fn run(program: &str, arguments: impl Iterator<Item = String>) -> ExitCode {
         Mode::All => graph::all(args.show_missing, &runner),
     };
 
+    let stdout = std::io::stdout();
+    let color = stdout.is_terminal();
     let result = if args.json {
-        output::print_json(&graphs, std::io::stdout().lock())
+        output::print_json(&graphs, stdout.lock())
     } else {
         match args.mode {
-            Mode::Inspect(_) => {
-                output::print_inspect(&graphs, args.explain, std::io::stdout().lock())
-            }
-            Mode::All => output::print_list(&graphs, args.explain, std::io::stdout().lock()),
+            Mode::Inspect(_) => output::print_inspect(&graphs, args.explain, color, stdout.lock()),
+            Mode::All => output::print_list(&graphs, args.explain, color, stdout.lock()),
         }
     };
     if let Err(error) = result {

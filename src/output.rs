@@ -1,19 +1,28 @@
 use std::io::{self, Write};
 
-use crate::model::{ActionGuide, OwnershipGraph, OwnershipNode, Resolution, ResolutionStatus};
+use crate::model::{
+    ActionGuide, Confidence, OwnershipGraph, OwnershipNode, Resolution, ResolutionStatus,
+};
+
+const RESET: &str = "\x1b[0m";
+const BOLD_CYAN: &str = "\x1b[1;36m";
+const GREEN: &str = "\x1b[32m";
+const YELLOW: &str = "\x1b[33m";
+const RED: &str = "\x1b[31m";
 
 pub fn print_inspect(
     graphs: &[OwnershipGraph],
     explain: bool,
+    color: bool,
     mut out: impl Write,
 ) -> io::Result<()> {
     for (graph_index, graph) in graphs.iter().enumerate() {
         if graph_index > 0 {
             writeln!(out)?;
         }
-        writeln!(out, "{}", graph.command)?;
+        writeln!(out, "{}", styled(&graph.command, BOLD_CYAN, color))?;
         if graph.resolutions.is_empty() {
-            writeln!(out, "└── ? not found in PATH")?;
+            writeln!(out, "└── {}", styled("? not found in PATH", RED, color))?;
             continue;
         }
         for (index, resolution) in graph.resolutions.iter().enumerate() {
@@ -22,6 +31,7 @@ pub fn print_inspect(
                 graph,
                 resolution,
                 explain,
+                color,
                 index + 1 == graph.resolutions.len(),
             )?;
         }
@@ -29,44 +39,56 @@ pub fn print_inspect(
     Ok(())
 }
 
-pub fn print_list(graphs: &[OwnershipGraph], explain: bool, mut out: impl Write) -> io::Result<()> {
+pub fn print_list(
+    graphs: &[OwnershipGraph],
+    explain: bool,
+    color: bool,
+    mut out: impl Write,
+) -> io::Result<()> {
     let command_width = graphs
         .iter()
         .map(|graph| graph.command.len())
         .max()
         .unwrap_or(7)
         .max(7);
-    writeln!(
-        out,
+    let header = format!(
         "{:<command_width$}  {:<10}  {:<9}  OWNER CHAIN",
         "COMMAND", "CONFIDENCE", "SHADOWED"
-    )?;
+    );
+    writeln!(out, "{}", styled(&header, BOLD_CYAN, color))?;
     for graph in graphs {
         let Some(active) = graph.active() else {
+            let command = format!("{:<command_width$}", graph.command);
+            let confidence = format!("{:<10}", "unknown");
             writeln!(
                 out,
-                "{:<command_width$}  {:<10}  {:<9}  not found",
-                graph.command, "unknown", "0"
+                "{}  {}  {:<9}  {}",
+                styled(&command, BOLD_CYAN, color),
+                styled(&confidence, RED, color),
+                "0",
+                styled("not found", RED, color)
             )?;
             continue;
         };
         let confidence = active
             .primary_owner()
-            .map(|owner| owner.confidence().as_str())
-            .unwrap_or("unknown");
+            .map(OwnershipNode::confidence)
+            .unwrap_or(Confidence::Unknown);
+        let command = format!("{:<command_width$}", graph.command);
+        let confidence_column = format!("{:<10}", confidence.as_str());
         writeln!(
             out,
-            "{:<command_width$}  {:<10}  {:<9}  {}",
-            graph.command,
-            confidence,
+            "{}  {}  {:<9}  {}",
+            styled(&command, BOLD_CYAN, color),
+            styled_confidence(&confidence_column, confidence, color),
             graph.shadowed_count(),
-            owner_chain(active)
+            owner_chain(active, color)
         )?;
     }
 
     if explain && !graphs.is_empty() {
-        writeln!(out, "\nDetails\n")?;
-        print_inspect(graphs, true, &mut out)?;
+        writeln!(out, "\n{}\n", styled("Details", BOLD_CYAN, color))?;
+        print_inspect(graphs, true, color, &mut out)?;
     }
     Ok(())
 }
@@ -76,17 +98,19 @@ fn print_resolution(
     graph: &OwnershipGraph,
     resolution: &Resolution,
     explain: bool,
+    color: bool,
     last_resolution: bool,
 ) -> io::Result<()> {
-    let status_marker = match resolution.status {
-        ResolutionStatus::Active => "●",
-        ResolutionStatus::Shadowed => "○",
+    let (status_marker, status_color) = match resolution.status {
+        ResolutionStatus::Active => ("●", GREEN),
+        ResolutionStatus::Shadowed => ("○", YELLOW),
     };
+    let status = format!("{status_marker} {}", resolution.status.as_str());
     writeln!(
         out,
-        "{} {status_marker} {}",
+        "{} {}",
         connector(last_resolution),
-        resolution.status.as_str()
+        styled(&status, status_color, color)
     )?;
     let prefix = child_prefix("", last_resolution);
     write_leaf(
@@ -115,11 +139,11 @@ fn print_resolution(
         &prefix,
         !has_tail,
         "ownership",
-        &format!("{} → {}", graph.command, owner_chain(resolution)),
+        &format!("{} → {}", graph.command, owner_chain(resolution, color)),
     )?;
 
     if explain {
-        print_owner_details(&mut out, &prefix, true, &resolution.owners)?;
+        print_owner_details(&mut out, &prefix, true, &resolution.owners, color)?;
     } else {
         if let Some(primary) = primary.filter(|_| has_actions) {
             print_action_group(
@@ -143,16 +167,43 @@ fn print_resolution(
     Ok(())
 }
 
-fn owner_chain(resolution: &Resolution) -> String {
+fn owner_chain(resolution: &Resolution, color: bool) -> String {
     if resolution.owners.is_empty() {
-        return "unconfirmed owner [unknown]".into();
+        return format!(
+            "unconfirmed owner [{}]",
+            styled_confidence("unknown", Confidence::Unknown, color)
+        );
     }
     resolution
         .owners
         .iter()
-        .map(|owner| format!("{} [{}]", owner.display_name(), owner.confidence().as_str()))
+        .map(|owner| {
+            let confidence = owner.confidence();
+            format!(
+                "{} [{}]",
+                owner.display_name(),
+                styled_confidence(confidence.as_str(), confidence, color)
+            )
+        })
         .collect::<Vec<_>>()
         .join(" → ")
+}
+
+fn styled(value: &str, style: &str, color: bool) -> String {
+    if color {
+        format!("{style}{value}{RESET}")
+    } else {
+        value.into()
+    }
+}
+
+fn styled_confidence(value: &str, confidence: Confidence, color: bool) -> String {
+    let style = match confidence {
+        Confidence::Confirmed => GREEN,
+        Confidence::Probable => YELLOW,
+        Confidence::Unknown => RED,
+    };
+    styled(value, style, color)
 }
 
 fn connector(last: bool) -> &'static str {
@@ -206,11 +257,12 @@ fn print_owner_details(
     prefix: &str,
     last: bool,
     owners: &[OwnershipNode],
+    color: bool,
 ) -> io::Result<()> {
     writeln!(out, "{prefix}{} owner details", connector(last))?;
     let prefix = child_prefix(prefix, last);
     for (index, owner) in owners.iter().enumerate() {
-        print_owner(out, &prefix, index + 1 == owners.len(), owner)?;
+        print_owner(out, &prefix, index + 1 == owners.len(), owner, color)?;
     }
     Ok(())
 }
@@ -220,13 +272,15 @@ fn print_owner(
     prefix: &str,
     last: bool,
     owner: &OwnershipNode,
+    color: bool,
 ) -> io::Result<()> {
+    let confidence = owner.confidence();
     writeln!(
         out,
         "{prefix}{} {} [{}]",
         connector(last),
         owner.display_name(),
-        owner.confidence().as_str()
+        styled_confidence(confidence.as_str(), confidence, color)
     )?;
     let prefix = child_prefix(prefix, last);
     let actions = action_entries(&owner.actions);
@@ -536,8 +590,8 @@ assert homebrew["name"] == "Homebrew"
         let graph = graph();
         let mut list = Vec::new();
         let mut inspect = Vec::new();
-        print_list(std::slice::from_ref(&graph), false, &mut list).unwrap();
-        print_inspect(&[graph], false, &mut inspect).unwrap();
+        print_list(std::slice::from_ref(&graph), false, false, &mut list).unwrap();
+        print_inspect(&[graph], false, false, &mut inspect).unwrap();
         let list = String::from_utf8(list).unwrap();
         let inspect = String::from_utf8(inspect).unwrap();
         assert!(list.contains("Homebrew [confirmed]"));
@@ -547,7 +601,7 @@ assert homebrew["name"] == "Homebrew"
     #[test]
     fn inspect_renders_a_compact_ownership_tree() {
         let mut output = Vec::new();
-        print_inspect(&[graph()], false, &mut output).unwrap();
+        print_inspect(&[graph()], false, false, &mut output).unwrap();
 
         assert_eq!(
             String::from_utf8(output).unwrap(),
@@ -568,7 +622,7 @@ assert homebrew["name"] == "Homebrew"
     #[test]
     fn explain_expands_owner_evidence_as_tree_branches() {
         let mut output = Vec::new();
-        print_inspect(&[graph()], true, &mut output).unwrap();
+        print_inspect(&[graph()], true, false, &mut output).unwrap();
         let output = String::from_utf8(output).unwrap();
 
         assert!(output.contains(concat!(
@@ -614,10 +668,21 @@ assert homebrew["name"] == "Homebrew"
             }],
         };
         let mut inspect = Vec::new();
-        print_inspect(&[graph], true, &mut inspect).unwrap();
+        print_inspect(&[graph], true, false, &mut inspect).unwrap();
         let inspect = String::from_utf8(inspect).unwrap();
         assert!(inspect.contains("SDKMAN! [probable]"));
         assert!(inspect.contains("kind: version_manager"));
+    }
+
+    #[test]
+    fn colored_output_highlights_status_and_confidence() {
+        let mut output = Vec::new();
+        print_inspect(&[graph()], false, true, &mut output).unwrap();
+        let output = String::from_utf8(output).unwrap();
+
+        assert!(output.contains("\x1b[1;36mnode\x1b[0m"));
+        assert!(output.contains("\x1b[32m● active\x1b[0m"));
+        assert!(output.contains("[\x1b[32mconfirmed\x1b[0m]"));
     }
 
     #[test]
