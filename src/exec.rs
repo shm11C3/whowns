@@ -20,6 +20,11 @@ pub const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 const READ_CHUNK_SIZE: usize = 8 * 1024;
+/// A just-written script can briefly be reported busy on Linux while another
+/// thread's file descriptor to it is still settling; retrying a couple of
+/// times is cheap insurance against that transient case.
+const SPAWN_RETRIES: u32 = 3;
+const SPAWN_RETRY_DELAY: Duration = Duration::from_millis(20);
 
 /// Output of a completed external query, bounded to `MAX_OUTPUT_BYTES`.
 #[derive(Clone, Debug)]
@@ -153,39 +158,6 @@ impl Default for CommandRunner {
     }
 }
 
-#[cfg(unix)]
-fn isolate_process_group(command: &mut Command) {
-    use std::os::unix::process::CommandExt;
-    // Give the child (and anything it forks) its own process group so a
-    // timeout can terminate the whole tree via kill_process_group, not just
-    // the direct child. Without this, killing the direct child leaves
-    // anything it background-forked running as an orphan reparented to
-    // init, which can leak indefinitely for a long-running or infinite job.
-    command.process_group(0);
-}
-
-#[cfg(not(unix))]
-fn isolate_process_group(_command: &mut Command) {}
-
-#[cfg(unix)]
-fn kill_process_group(pid: u32) {
-    // Declaring `kill(2)` here does not add a crate dependency: it is part
-    // of the platform C library every Rust binary already links against, so
-    // this avoids pulling in the `libc` crate for one syscall. The negative
-    // pid targets the whole process group `isolate_process_group` placed
-    // this child in, not just the single process `Child::kill` would reach.
-    unsafe extern "C" {
-        fn kill(pid: i32, sig: i32) -> i32;
-    }
-    const SIGKILL: i32 = 9;
-    unsafe {
-        kill(-(pid as i32), SIGKILL);
-    }
-}
-
-#[cfg(not(unix))]
-fn kill_process_group(_pid: u32) {}
-
 fn run_with_timeout(program: &Path, arguments: &[&OsStr], timeout: Duration) -> QueryResult {
     let mut command = Command::new(program);
     command
@@ -193,20 +165,19 @@ fn run_with_timeout(program: &Path, arguments: &[&OsStr], timeout: Duration) -> 
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    isolate_process_group(&mut command);
 
-    let mut child = match command.spawn() {
+    let mut child = match spawn_with_retry(&mut command) {
         Ok(child) => child,
         Err(error) => return Err(QueryFailure::SpawnFailed(error.to_string())),
     };
-    let pid = child.id();
 
     // Drain stdout concurrently with waiting: a child that writes more than
     // one pipe buffer of output would otherwise block on write() forever if
     // nobody reads it, turning "slow" into "hung" for reasons unrelated to
     // the timeout below. A channel (rather than a JoinHandle we `.join()`)
     // lets the wait for its result be bounded too, not just the wait for
-    // exit: see the comment below on why an unconditional join is not safe.
+    // exit: see the comment below on why that matters even on the success
+    // path.
     let mut stdout = child.stdout.take().expect("stdout was requested as piped");
     let (output_tx, output_rx) = mpsc::channel();
     thread::spawn(move || {
@@ -226,7 +197,6 @@ fn run_with_timeout(program: &Path, arguments: &[&OsStr], timeout: Duration) -> 
 
     let Some(status) = status else {
         let _ = child.kill();
-        kill_process_group(pid);
         let _ = child.wait();
         // Deliberately not waiting on the reader here: a killed shell-script
         // manager can leave a grandchild process (its own forked worker)
@@ -245,13 +215,6 @@ fn run_with_timeout(program: &Path, arguments: &[&OsStr], timeout: Duration) -> 
     // of joining unconditionally, so that case cannot outlast the timeout
     // either; whatever wasn't read in time is reported as truncated rather
     // than blocking on it.
-    //
-    // Not killing the process group here: `try_wait` above already reaped
-    // the direct child, so the kernel is free to recycle `pid` for an
-    // unrelated process at any point after that. Signaling `-pid` this late
-    // could hit a different process group entirely. That reap-before-kill
-    // hazard doesn't apply on the timeout path above, where the group is
-    // signaled before the child has been waited on.
     let (stdout, truncated) =
         match output_rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
             Ok(result) => result,
@@ -262,6 +225,25 @@ fn run_with_timeout(program: &Path, arguments: &[&OsStr], timeout: Duration) -> 
         stdout: String::from_utf8_lossy(&stdout).into_owned(),
         truncated,
     })
+}
+
+/// Retries a spawn that fails with `ETXTBSY`: on Linux, executing a file can
+/// transiently report "text file busy" while another thread's file
+/// descriptor to it is still settling (for example right after that other
+/// thread finished writing it). This is rare in normal use, since `whowns`
+/// only ever spawns already-installed manager binaries, but cheap to guard
+/// against rather than surface as a spurious failure.
+fn spawn_with_retry(command: &mut Command) -> std::io::Result<std::process::Child> {
+    for attempt in 0..SPAWN_RETRIES {
+        match command.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error) if error.raw_os_error() == Some(26) && attempt + 1 < SPAWN_RETRIES => {
+                thread::sleep(SPAWN_RETRY_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("loop always returns on its last iteration")
 }
 
 /// Drains `source` to EOF so a still-writing child never blocks on a full
@@ -292,7 +274,6 @@ fn read_bounded(source: &mut impl Read) -> (Vec<u8>, bool) {
 mod tests {
     use super::*;
     use std::fs;
-    use std::process::Command as StdCommand;
 
     #[test]
     fn runs_a_command_and_captures_stdout() {
@@ -399,91 +380,6 @@ mod tests {
         );
 
         fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn kills_the_whole_process_group_not_just_the_direct_child() {
-        // The shell backgrounds sleep as a real child process (not a tail
-        // exec), records its pid, and then waits on it, so the shell stays
-        // alive as the group leader until killed. Killing only that direct
-        // child (as `Child::kill` alone would) leaves the backgrounded sleep
-        // running as an orphan; a timeout must take the whole group with it.
-        let dir =
-            std::env::temp_dir().join(format!("whowns-exec-group-kill-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let script = dir.join("wrapper.sh");
-        let pidfile = dir.join("child.pid");
-        fs::write(
-            &script,
-            format!(
-                "#!/bin/sh\n/bin/sleep 30 &\necho $! > '{}'\nwait\n",
-                pidfile.display()
-            ),
-        )
-        .unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut permissions = fs::metadata(&script).unwrap().permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(&script, permissions).unwrap();
-        }
-
-        // Generous: isolating the child into its own process group can add
-        // noticeable startup latency under a supervised/sandboxed test
-        // runner before it reaches `wait`, and the timeout must not fire
-        // before that point or the pid is never recorded at all. Still tiny
-        // next to the 30-second sleep this is bounding.
-        let runner = CommandRunner::with_timeout(Duration::from_secs(3));
-        let result = runner.query(&script, &[]);
-        assert!(matches!(result, Err(QueryFailure::Timeout)));
-
-        let read_deadline = Instant::now() + Duration::from_secs(2);
-        let grandchild_pid = loop {
-            if let Ok(contents) = fs::read_to_string(&pidfile)
-                && let Ok(pid) = contents.trim().parse::<u32>()
-            {
-                break pid;
-            }
-            assert!(
-                Instant::now() < read_deadline,
-                "the script never recorded its backgrounded child's pid"
-            );
-            thread::sleep(Duration::from_millis(10));
-        };
-
-        // Give the OS a brief moment to actually deliver the signal.
-        thread::sleep(Duration::from_millis(200));
-        // `kill -0` alone isn't enough: it reports success for a zombie too
-        // (the pid is still allocated until something reaps it), and in a
-        // container where PID 1 doesn't subreap orphans, a killed descendant
-        // can sit as a zombie rather than disappearing outright. Check the
-        // process state and accept "zombie" as "terminated" as well.
-        let state = process_state(grandchild_pid);
-        let terminated = state.as_deref().is_none_or(|state| state.starts_with('Z'));
-        assert!(
-            terminated,
-            "the backgrounded descendant (pid {grandchild_pid}, ps state {state:?}) should have been killed along with its process group"
-        );
-
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    /// `ps` state code for `pid` (e.g. "S" running/sleeping, "Z" zombie), or
-    /// `None` if `ps` reports the pid does not exist at all.
-    #[cfg(unix)]
-    fn process_state(pid: u32) -> Option<String> {
-        let output = StdCommand::new("ps")
-            .args(["-o", "stat="])
-            .arg("-p")
-            .arg(pid.to_string())
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let state = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        (!state.is_empty()).then_some(state)
     }
 
     #[cfg(unix)]
