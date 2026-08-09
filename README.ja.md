@@ -91,6 +91,7 @@ whowns --all --json
 OwnershipGraph (command)
 └── Resolution[] (active / shadowed, path, real_path)
     └── OwnershipNode[] (近い管理元から順番に並ぶ)
+        ├── id (安定 ID) / name (表示名)
         ├── kind
         ├── package / version
         ├── Confidence
@@ -100,6 +101,7 @@ OwnershipGraph (command)
 
 - `Resolution`: PATH 上の有効な実体と隠れている実体
 - `OwnershipNode`: `runtime -> version manager -> installation source` の順序付き所有関係
+- `id`: `homebrew`、`sdkman`、`macos_installer` のような安定した機械可読の所有者 ID。`name` は表示用テキストであり、変更しても `id` には影響しない
 - `Evidence`: PATH、symlink、filesystem、`pkgutil`、パッケージ照会、管理ツール照会などの根拠
 - `Confidence`: `confirmed`、`probable`、`unknown`
 - `ActionGuide`: 確認・更新・削除の候補コマンドと注意事項
